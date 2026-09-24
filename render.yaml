@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: rf-smm-panel
+    runtime: node
+    plan: free
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SMM_API_URL
+        value: https://my.smmgen.com/api/v2
+      - key: SMM_API_KEY
+        value: 64994346bbbbeeaa10307df325162283
