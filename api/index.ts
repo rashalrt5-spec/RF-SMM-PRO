@@ -25,7 +25,7 @@ export default async function handler(req: any, res: any) {
   if (url.includes('/smm/config')) {
     return configHandler(req, res);
   }
-  if (url.includes('/telegram/order-notify')) {
+  if (url.includes('/telegram/order-notify') || url.includes('/telegram-notify')) {
     return telegramHandler(req, res);
   }
   if (url.includes('/ai-support')) {
