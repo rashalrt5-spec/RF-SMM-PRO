@@ -147,6 +147,13 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
 
   // Subscriptions state
   const [subscriptions, setSubscriptions] = useState<UserVIPSubscription[]>([]);
+  const [subFilterStatus, setSubFilterStatus] = useState<'All' | 'Active' | 'Cancelled' | 'Completed'>('All');
+  const [subSearchQuery, setSubSearchQuery] = useState('');
+  const [cancellingSub, setCancellingSub] = useState<UserVIPSubscription | null>(null);
+  const [cancelRefundAmount, setCancelRefundAmount] = useState('0');
+  const [isRefunding, setIsRefunding] = useState(false);
+  const [cancelReasonText, setCancelReasonText] = useState('অ্যাডমিন কর্তৃক ভিআইপি ক্যানসেল করা হয়েছে');
+  const [isProcessingSubAction, setIsProcessingSubAction] = useState(false);
 
   // 1. Listen to all withdrawals
   useEffect(() => {
@@ -433,6 +440,144 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
     }
     return true;
   });
+
+  // Filtered subscriptions
+  const filteredSubscriptions = subscriptions.filter((s) => {
+    if (subFilterStatus !== 'All' && s.status !== subFilterStatus) return false;
+    if (subSearchQuery.trim()) {
+      const q = subSearchQuery.toLowerCase().trim();
+      const matchName = (s.userName || '').toLowerCase().includes(q);
+      const matchUid = (s.uid || '').toLowerCase().includes(q);
+      const matchPkg = (s.packageName || '').toLowerCase().includes(q);
+      const matchEmail = (s.userEmail || '').toLowerCase().includes(q);
+      return matchName || matchUid || matchPkg || matchEmail;
+    }
+    return true;
+  });
+
+  // Cancel VIP Subscription handler
+  const handleConfirmCancelSub = async () => {
+    if (!cancellingSub) return;
+    setIsProcessingSubAction(true);
+    haptic('heavy');
+    try {
+      const refundNum = isRefunding ? parseFloat(cancelRefundAmount) || 0 : 0;
+
+      // 1. Update subscription in Firestore
+      await updateDoc(doc(db, 'vip_subscriptions', cancellingSub.id), {
+        status: 'Cancelled',
+        cancelledAt: new Date().toISOString(),
+        cancelledByAdmin: true,
+        cancelReason: cancelReasonText.trim() || 'অ্যাডমিন কর্তৃক বাতিল',
+        refundAmount: refundNum
+      });
+
+      // 2. Refund balance if specified
+      if (refundNum > 0 && cancellingSub.uid) {
+        const uRef = doc(db, 'users', cancellingSub.uid);
+        const uSnap = await getDoc(uRef);
+        if (uSnap.exists()) {
+          const currentBal = uSnap.data().balance || 0;
+          await updateDoc(uRef, { balance: currentBal + refundNum });
+        }
+      }
+
+      // 3. Update User document VIP status if no other active VIP subscription
+      if (cancellingSub.uid) {
+        const otherActive = subscriptions.filter(
+          (s) => s.uid === cancellingSub.uid && s.id !== cancellingSub.id && s.status === 'Active'
+        );
+        const uRef = doc(db, 'users', cancellingSub.uid);
+        if (otherActive.length === 0) {
+          await updateDoc(uRef, {
+            isVip: false,
+            vipPackageName: '',
+            vipBadge: '',
+            vipCancelledAt: new Date().toISOString()
+          });
+        } else {
+          await updateDoc(uRef, {
+            isVip: true,
+            vipPackageName: otherActive[0].packageName,
+            vipBadge: 'VIP MEMBER'
+          });
+        }
+      }
+
+      showToast(
+        `✅ ইউজার "${cancellingSub.userName || cancellingSub.uid}"-এর VIP বাতিল করা হয়েছে${refundNum > 0 ? ` (৳${refundNum} রিফান্ড সহ)` : ''}!`,
+        'success'
+      );
+      setCancellingSub(null);
+    } catch (err: any) {
+      console.error('Cancel VIP error:', err);
+      showToast('ভিআইপি বাতিল ব্যর্থ: ' + err.message, 'error');
+    } finally {
+      setIsProcessingSubAction(false);
+    }
+  };
+
+  // Reactivate / Restore Cancelled VIP Subscription
+  const handleReactivateSub = async (sub: UserVIPSubscription) => {
+    if (!window.confirm(`আপনি কি "${sub.userName || sub.uid}"-এর "${sub.packageName}" ভিআইপি মেম্বারশিপ পুনরায় সক্রিয় (চালু) করতে চান?`)) {
+      return;
+    }
+    setIsProcessingSubAction(true);
+    haptic('success');
+    try {
+      // 1. Update subscription status to Active
+      await updateDoc(doc(db, 'vip_subscriptions', sub.id), {
+        status: 'Active',
+        reactivatedAt: new Date().toISOString(),
+        lastAutoCreditTimestamp: Date.now()
+      });
+
+      // 2. Update user doc
+      if (sub.uid) {
+        const uRef = doc(db, 'users', sub.uid);
+        await updateDoc(uRef, {
+          isVip: true,
+          vipPackageName: sub.packageName,
+          vipBadge: 'VIP MEMBER',
+          vipReactivatedAt: new Date().toISOString()
+        });
+      }
+
+      showToast(`🎉 ইউজার "${sub.userName || sub.uid}"-এর ভিআইপি মেম্বারশিপ পুনরায় সক্রিয় করা হয়েছে!`, 'success');
+    } catch (err: any) {
+      console.error('Reactivate VIP error:', err);
+      showToast('ভিআইপি পুনরায় চালু করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    } finally {
+      setIsProcessingSubAction(false);
+    }
+  };
+
+  // Delete subscription permanently
+  const handleDeleteSub = async (sub: UserVIPSubscription) => {
+    if (!window.confirm(`আপনি কি "${sub.userName || sub.uid}"-এর এই ভিআইপি রেকর্ডটি ডিলিট করতে চান?`)) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'vip_subscriptions', sub.id));
+      if (sub.uid) {
+        const otherActive = subscriptions.filter(
+          (s) => s.uid === sub.uid && s.id !== sub.id && s.status === 'Active'
+        );
+        if (otherActive.length === 0) {
+          const uRef = doc(db, 'users', sub.uid);
+          await updateDoc(uRef, {
+            isVip: false,
+            vipPackageName: '',
+            vipBadge: ''
+          });
+        }
+      }
+      showToast('ভিআইপি রেকর্ড ডিলিট করা হয়েছে!', 'info');
+      haptic('light');
+    } catch (err: any) {
+      showToast('ডিলিট এরর: ' + err.message, 'error');
+    }
+  };
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -1267,61 +1412,251 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
 
       {/* TAB 3: USER SUBSCRIPTIONS */}
       {adminTab === 'subscriptions' && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-black text-white">সকল ইউজার ভিআইপি সাবস্ক্রিপশন ({subscriptions.length})</h4>
+        <div className="space-y-4">
+          {/* Header & Description */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h4 className="text-sm font-black text-white flex items-center gap-2">
+                <i className="fas fa-crown text-amber-400"></i>
+                <span>ইউজার ভিআইপি মেম্বারশিপ তালিকা ({subscriptions.length})</span>
+              </h4>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                যেকোনো ইউজারের VIP মেম্বারশিপ সরাসরি ক্যানসেল (বাতিল) করুন অথবা পূর্বে বাতিল করা VIP পুনরায় চালু / সক্রিয় করুন
+              </p>
+            </div>
           </div>
 
-          {subscriptions.length === 0 ? (
+          {/* Quick Metrics Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div className="bg-slate-900/80 p-3 rounded-2xl border border-white/10 shadow-sm">
+              <span className="text-[10px] font-bold text-slate-400 uppercase block">মোট মেম্বারশিপ</span>
+              <div className="text-lg font-black text-white font-mono mt-0.5">
+                {subscriptions.length} <span className="text-xs text-slate-400 font-normal">জন</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/80 p-3 rounded-2xl border border-emerald-500/30 shadow-sm">
+              <span className="text-[10px] font-bold text-emerald-400 uppercase block">সক্রিয় ভিআইপি (Active)</span>
+              <div className="text-lg font-black text-emerald-300 font-mono mt-0.5">
+                {subscriptions.filter((s) => s.status === 'Active').length} <span className="text-xs text-slate-400 font-normal">জন</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/80 p-3 rounded-2xl border border-red-500/30 shadow-sm">
+              <span className="text-[10px] font-bold text-red-400 uppercase block">ক্যানসেলড / বাতিল</span>
+              <div className="text-lg font-black text-red-400 font-mono mt-0.5">
+                {subscriptions.filter((s) => s.status === 'Cancelled').length} <span className="text-xs text-slate-400 font-normal">জন</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/80 p-3 rounded-2xl border border-amber-500/30 shadow-sm">
+              <span className="text-[10px] font-bold text-amber-400 uppercase block">মোট প্যাকেজ ইনভেস্ট</span>
+              <div className="text-lg font-black text-amber-300 font-mono mt-0.5">
+                ৳{subscriptions.reduce((sum, s) => sum + (s.packagePrice || 0), 0).toFixed(0)}
+              </div>
+            </div>
+          </div>
+
+          {/* Search & Filter Controls */}
+          <div className="flex flex-col sm:flex-row gap-2.5">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                value={subSearchQuery}
+                onChange={(e) => setSubSearchQuery(e.target.value)}
+                placeholder="ইউজারের নাম, UID অথবা প্যাকেজ দিয়ে সার্চ করুন..."
+                className="input-modern text-xs pl-9 py-2"
+              />
+              <i className="fas fa-search absolute left-3 top-2.5 text-slate-500 text-xs"></i>
+              {subSearchQuery && (
+                <button
+                  onClick={() => setSubSearchQuery('')}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-white text-xs"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              )}
+            </div>
+
+            <div className="flex gap-1.5 p-1 bg-black/40 rounded-xl border border-white/10 self-start sm:self-auto overflow-x-auto">
+              {[
+                { id: 'All', label: 'সকল', count: subscriptions.length },
+                { id: 'Active', label: 'সক্রিয়', count: subscriptions.filter((s) => s.status === 'Active').length },
+                { id: 'Cancelled', label: 'ক্যানসেলড', count: subscriptions.filter((s) => s.status === 'Cancelled').length },
+                { id: 'Completed', label: 'সম্পন্ন', count: subscriptions.filter((s) => s.status === 'Completed').length }
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => {
+                    setSubFilterStatus(f.id as any);
+                    haptic('light');
+                  }}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+                    subFilterStatus === f.id
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <span>{f.label}</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 font-mono">
+                    {f.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Subscription List */}
+          {filteredSubscriptions.length === 0 ? (
             <div className="p-8 text-center rounded-3xl bg-slate-900/50 border border-white/10 text-slate-400 text-xs">
-              এখনও কোনো ইউজার ভিআইপি প্যাকেজ কেনেনি।
+              কোনো ভিআইপি সাবস্ক্রিপশন রেকর্ড পাওয়া যায়নি।
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {subscriptions.map((sub) => (
-                <div
-                  key={sub.id}
-                  className="p-3.5 rounded-2xl bg-slate-900/80 border border-white/10 flex flex-wrap items-center justify-between gap-3 shadow-md"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center text-sm font-black border border-amber-500/30">
-                      <i className="fas fa-crown"></i>
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h5 className="font-black text-xs text-white">{sub.packageName}</h5>
-                        <span
-                          className={`text-[9px] font-mono px-2 py-0.2 rounded-full border ${
-                            sub.status === 'Completed'
-                              ? 'bg-slate-800 text-slate-400 border-white/10'
-                              : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+            <div className="space-y-3">
+              {filteredSubscriptions.map((sub) => {
+                const isCancelled = sub.status === 'Cancelled';
+                const isActive = sub.status === 'Active';
+                const isCompleted = sub.status === 'Completed';
+
+                return (
+                  <div
+                    key={sub.id}
+                    className={`p-4 rounded-2xl border transition-all shadow-md ${
+                      isCancelled
+                        ? 'bg-red-950/20 border-red-500/30'
+                        : isActive
+                        ? 'bg-slate-900/90 border-emerald-500/30'
+                        : 'bg-slate-900/60 border-white/10'
+                    }`}
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      {/* Left: User & Package info */}
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={`w-11 h-11 rounded-2xl flex items-center justify-center text-lg font-black shrink-0 ${
+                            isCancelled
+                              ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                              : isActive
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              : 'bg-slate-800 text-slate-400 border border-white/10'
                           }`}
                         >
-                          {sub.status}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        ইউজার: <strong className="text-white">{sub.userName || 'User'}</strong> • UID: {sub.uid ? sub.uid.slice(0, 8) : 'N/A'}
-                      </p>
-                      <p className="text-[10px] text-slate-500">
-                        কেনা হয়েছে: {new Date(sub.purchasedAt).toLocaleDateString('bn-BD')}
-                      </p>
-                    </div>
-                  </div>
+                          <i className={`fas ${isCancelled ? 'fa-ban' : 'fa-crown'}`}></i>
+                        </div>
 
-                  <div className="text-right">
-                    <div className="text-xs text-slate-300 font-bold">
-                      ক্লেইম: <span className="text-emerald-400 font-mono font-black">{sub.daysClaimed || 0} / {sub.durationDays || 30} দিন</span>
-                    </div>
-                    <div className="text-xs text-amber-300 font-mono font-extrabold mt-0.5">
-                      মোট লাভ: ৳{(sub.totalEarned || 0).toFixed(2)}
-                    </div>
-                    <div className="text-[10px] text-slate-400 mt-0.5">
-                      দৈনিক ১০%: ৳{(sub.dailyReturnAmount || 0).toFixed(2)}
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h5 className="font-black text-sm text-white">{sub.packageName}</h5>
+                            <span className="text-xs font-mono font-bold text-amber-400">৳{sub.packagePrice}</span>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                                isCancelled
+                                  ? 'bg-red-500/20 text-red-300 border-red-500/30'
+                                  : isActive
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                  : 'bg-slate-800 text-slate-400 border-white/10'
+                              }`}
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  isCancelled ? 'bg-red-400' : isActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'
+                                }`}
+                              ></span>
+                              <span>
+                                {isCancelled ? 'ক্যানসেলড / বাতিল' : isActive ? 'সক্রিয় (Active)' : 'মেয়াদ শেষ (Completed)'}
+                              </span>
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                            <span>
+                              ইউজার: <strong className="text-white">{sub.userName || 'User'}</strong>
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-500">UID: {sub.uid}</span>
+                            {sub.userEmail && <span className="text-slate-500 text-[11px]">{sub.userEmail}</span>}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-3 text-[11px] text-slate-500">
+                            <span>কেনা হয়েছে: {new Date(sub.purchasedAt).toLocaleDateString('bn-BD')}</span>
+                            {isCancelled && sub.cancelledAt && (
+                              <span className="text-red-400 font-medium">
+                                বাতিল: {new Date(sub.cancelledAt).toLocaleDateString('bn-BD')} ({sub.cancelReason || 'অ্যাডমিন কর্তৃক বাতিল'})
+                              </span>
+                            )}
+                            {sub.reactivatedAt && (
+                              <span className="text-emerald-400 font-medium">
+                                পুনরায় সক্রিয়: {new Date(sub.reactivatedAt).toLocaleDateString('bn-BD')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Middle: Claim Progress & Earnings */}
+                      <div className="bg-black/30 p-2.5 rounded-xl border border-white/5 flex flex-wrap items-center gap-4 text-xs">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-bold">ক্লেইম প্রোগ্রেস:</span>
+                          <span className="text-emerald-400 font-mono font-black">
+                            {sub.daysClaimed || 0} / {sub.durationDays || 30} দিন
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-bold">দৈনিক লাভ:</span>
+                          <span className="text-amber-400 font-mono font-bold">
+                            ৳{(sub.dailyReturnAmount || 0).toFixed(1)} ({sub.dailyReturnPercent || 10}%)
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-bold">মোট দেওয়া হয়েছে:</span>
+                          <span className="text-white font-mono font-black">
+                            ৳{(sub.totalEarned || 0).toFixed(1)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Right: ACTION BUTTONS (Cancel VIP / Reactivate VIP) */}
+                      <div className="flex items-center gap-2 self-end lg:self-center">
+                        {isActive && (
+                          <button
+                            onClick={() => {
+                              setCancellingSub(sub);
+                              setIsRefunding(false);
+                              setCancelRefundAmount(sub.packagePrice?.toString() || '100');
+                              setCancelReasonText('অ্যাডমিন কর্তৃক ভিআইপি ক্যানসেল করা হয়েছে');
+                              haptic('heavy');
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/40 text-xs font-extrabold transition flex items-center gap-1.5 active:scale-95 shadow-sm"
+                            title="ভিআইপি বাতিল করুন"
+                          >
+                            <i className="fas fa-ban"></i>
+                            <span>VIP ক্যানসেল</span>
+                          </button>
+                        )}
+
+                        {isCancelled && (
+                          <button
+                            onClick={() => handleReactivateSub(sub)}
+                            disabled={isProcessingSubAction}
+                            className="px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-extrabold transition flex items-center gap-1.5 active:scale-95 shadow-sm"
+                            title="ভিআইপি পুনরায় চালু করুন"
+                          >
+                            <i className="fas fa-rotate-left"></i>
+                            <span>আবার চালু করুন</span>
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleDeleteSub(sub)}
+                          className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-red-900/40 text-slate-400 hover:text-red-400 border border-white/10 flex items-center justify-center transition active:scale-95"
+                          title="রেকর্ড মুছে ফেলুন"
+                        >
+                          <i className="fas fa-trash text-xs"></i>
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1433,6 +1768,134 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                 className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-black shadow transition"
               >
                 বাতিল ও রিফান্ড করুন
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Cancel VIP Subscription Modal */}
+      {cancellingSub && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-red-500/40 rounded-3xl max-w-md w-full p-5 space-y-4 shadow-2xl relative">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <i className="fas fa-ban text-red-400 text-lg"></i>
+                <span>ভিআইপি মেম্বারশিপ ক্যানসেল করুন</span>
+              </h3>
+              <button
+                onClick={() => setCancellingSub(null)}
+                className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center"
+              >
+                <i className="fas fa-times text-xs"></i>
+              </button>
+            </div>
+
+            {/* Target User Details */}
+            <div className="p-3.5 bg-black/40 rounded-2xl border border-white/5 space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">ইউজার:</span>
+                <span className="font-black text-white">{cancellingSub.userName || 'User'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">UID:</span>
+                <span className="font-mono text-slate-300">{cancellingSub.uid}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">বর্তমান প্যাকেজ:</span>
+                <span className="font-bold text-amber-400">
+                  {cancellingSub.packageName} (৳{cancellingSub.packagePrice})
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">ক্লেইম দিন:</span>
+                <span className="font-mono text-emerald-400">
+                  {cancellingSub.daysClaimed || 0} / {cancellingSub.durationDays || 30} দিন (মোট লাভ: ৳
+                  {(cancellingSub.totalEarned || 0).toFixed(2)})
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              {/* Refund balance toggle */}
+              <div className="p-3 rounded-xl bg-slate-800/60 border border-white/5 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isRefunding}
+                    onChange={(e) => setIsRefunding(e.target.checked)}
+                    className="w-4 h-4 accent-amber-500 rounded"
+                  />
+                  <span className="font-bold text-slate-200">ইউজারের ব্যালেন্সে টাকা রিফান্ড করবেন?</span>
+                </label>
+                {isRefunding && (
+                  <div className="pt-1">
+                    <label className="text-slate-400 text-[11px] block mb-1">রিফান্ড এমাউন্ট (টাকা):</label>
+                    <input
+                      type="number"
+                      value={cancelRefundAmount}
+                      onChange={(e) => setCancelRefundAmount(e.target.value)}
+                      placeholder="রিফান্ড এমাউন্ট লিখুন"
+                      className="input-modern py-1.5 text-xs font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Cancel reason */}
+              <div>
+                <label className="text-slate-300 font-bold block mb-1">ক্যানসেল করার কারণ (ঐচ্ছিক):</label>
+                <input
+                  type="text"
+                  value={cancelReasonText}
+                  onChange={(e) => setCancelReasonText(e.target.value)}
+                  placeholder="যেমন: অ্যাডমিন কর্তৃক ক্যানসেল / ব্যবহারকারীর অনুরোধ"
+                  className="input-modern py-2 text-xs"
+                />
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {['অ্যাডমিন কর্তৃক ক্যানসেল', 'ইউজারের অনুরোধে বাতিল', 'নিয়ম লঙ্ঘন', 'ভুল প্যাকেজ ক্রয়'].map(
+                    (tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => setCancelReasonText(tag)}
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-white/5 transition"
+                      >
+                        {tag}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-red-950/30 border border-red-500/20 text-[11px] text-red-300 flex items-center gap-2">
+              <i className="fas fa-exclamation-triangle shrink-0"></i>
+              <span>
+                ক্যানসেল করলে ইউজারের দৈনিক অটো লাভ বন্ধ হবে এবং তিনি সাধারণ ইউজারে রূপান্তরিত হবেন। পরবর্তীতে আপনি যেকোনো
+                সময় আবার সক্রিয় করতে পারবেন।
+              </span>
+            </div>
+
+            <div className="flex gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setCancellingSub(null)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition"
+              >
+                ফিরে যান
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCancelSub}
+                disabled={isProcessingSubAction}
+                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 active:scale-95 disabled:opacity-50"
+              >
+                {isProcessingSubAction ? (
+                  <i className="fas fa-spinner fa-spin"></i>
+                ) : (
+                  <i className="fas fa-ban"></i>
+                )}
+                <span>বাতিল নিশ্চিত করুন</span>
               </button>
             </div>
           </div>

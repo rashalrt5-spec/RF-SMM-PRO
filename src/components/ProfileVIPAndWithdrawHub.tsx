@@ -810,11 +810,21 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
               </span>
             </div>
           ) : (
-            <div className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-2.5 text-xs text-emerald-300 shadow-sm">
-              <i className="fas fa-circle-check text-emerald-400 text-sm"></i>
-              <span>
-                <strong>প্যাকেজ নিয়ম:</strong> ১ জন ইউজার একসাথে ১টি প্যাকেজ একটিভ করতে পারবেন। ওই প্যাকেজ শেষ হবার পরে আবার নতুন করে প্যাকেজ একটিভ করতে পারবেন।
-              </span>
+            <div className="space-y-2">
+              {userSubscriptions.some((s) => s.status === 'Cancelled') && (
+                <div className="p-3 rounded-2xl bg-amber-950/40 border border-amber-500/30 flex items-center gap-2.5 text-xs text-amber-300 shadow-sm">
+                  <i className="fas fa-info-circle text-amber-400 text-sm"></i>
+                  <span>
+                    আপনার পূর্ববর্তী ভিআইপি সাবস্ক্রিপশনটি বাতিল করা হয়েছে। আপনি এখন নতুন করে যেকোনো ভিআইপি প্যাকেজ একটিভ করতে পারবেন।
+                  </span>
+                </div>
+              )}
+              <div className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-2.5 text-xs text-emerald-300 shadow-sm">
+                <i className="fas fa-circle-check text-emerald-400 text-sm"></i>
+                <span>
+                  <strong>প্যাকেজ নিয়ম:</strong> ১ জন ইউজার একসাথে ১টি প্যাকেজ একটিভ করতে পারবেন। ওই প্যাকেজ শেষ অথবা বাতিল হলে আবার নতুন করে প্যাকেজ একটিভ করতে পারবেন।
+                </span>
+              </div>
             </div>
           )}
 

@@ -113,6 +113,9 @@ interface UserSession {
   isVip?: boolean;
   vipPackageName?: string;
   vipBadge?: string;
+  isBlocked?: boolean;
+  blockedAt?: string;
+  blockReason?: string;
 }
 
 export interface ReferralCommission {
@@ -728,7 +731,7 @@ export default function App() {
   const [newMethodNote, setNewMethodNote] = useState('');
 
   // Admin Manual Service Form & Control State
-  const [adminSubTab, setAdminSubTab] = useState<'users' | 'vip_withdraw' | 'announcement' | 'payment' | 'deposits' | 'orders' | 'services' | 'notifications' | 'links' | 'welcome' | 'settings' | 'tasks' | 'referrals' | 'support' | 'packages'>('users');
+  const [adminSubTab, setAdminSubTab] = useState<'users' | 'blocked_users' | 'vip_withdraw' | 'announcement' | 'payment' | 'deposits' | 'orders' | 'services' | 'notifications' | 'links' | 'welcome' | 'settings' | 'tasks' | 'referrals' | 'support' | 'packages'>('users');
 
   // Announcement Popup Slides (Matching Screenshot with Crown, Poster, Bengali Gratitude, Previous/Next Buttons)
   const DEFAULT_ANNOUNCEMENT_SLIDES: AnnouncementSlide[] = [
@@ -832,13 +835,20 @@ export default function App() {
     }
   });
   const [editingPaymentMethods, setEditingPaymentMethods] = useState<Record<string, PaymentMethodConfig>>({});
-  const [allUsersList, setAllUsersList] = useState<Array<{ uid: string; name?: string; balance?: number; total_orders?: number }>>([]);
+  const [allUsersList, setAllUsersList] = useState<Array<{ uid: string; name?: string; balance?: number; total_orders?: number; isVip?: boolean; vipPackageName?: string; vipBadge?: string; [key: string]: any }>>([]);
   const [allAdminOrdersList, setAllAdminOrdersList] = useState<OrderData[]>([]);
   const [depFilter, setDepFilter] = useState<'all' | 'Pending' | 'Approved' | 'Rejected'>('all');
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
   const [isBatchSyncing, setIsBatchSyncing] = useState(false);
   const [customDepAmounts, setCustomDepAmounts] = useState<{ [id: string]: string }>({});
   const [userBalanceAdjustInput, setUserBalanceAdjustInput] = useState<{ [uid: string]: string }>({});
+  
+  // Block & Unblock User States
+  const [blockingTargetUser, setBlockingTargetUser] = useState<{ uid: string; name?: string; email?: string; balance?: number } | null>(null);
+  const [blockReasonInput, setBlockReasonInput] = useState('');
+  const [isProcessingBlockAction, setIsProcessingBlockAction] = useState(false);
+  const [blockedTabFilter, setBlockedTabFilter] = useState<'blocked' | 'active' | 'all'>('blocked');
+  const [blockedSearchQuery, setBlockedSearchQuery] = useState('');
 
   const [broadcastTitle, setBroadcastTitle] = useState('');
   const [broadcastMessage, setBroadcastMessage] = useState('');
@@ -1683,7 +1693,7 @@ export default function App() {
           if (d.photoURL) {
             setUserPhotoURL((prev) => (prev !== d.photoURL ? d.photoURL : prev));
           }
-          if (d.name || d.photoURL || d.isVip !== undefined) {
+          if (d.name || d.photoURL || d.isVip !== undefined || d.isBlocked !== undefined) {
             setCurrentUser((prev) => {
               if (!prev) return prev;
               return {
@@ -1692,7 +1702,10 @@ export default function App() {
                 photoURL: d.photoURL !== undefined ? d.photoURL : prev.photoURL,
                 isVip: !!d.isVip,
                 vipPackageName: d.vipPackageName || prev.vipPackageName,
-                vipBadge: d.vipBadge || prev.vipBadge
+                vipBadge: d.vipBadge || prev.vipBadge,
+                isBlocked: !!d.isBlocked,
+                blockedAt: d.blockedAt || prev.blockedAt,
+                blockReason: d.blockReason || prev.blockReason
               };
             });
             if (d.isVip !== undefined) {
@@ -2603,6 +2616,161 @@ export default function App() {
     } catch (e) {
       console.error('Error subtracting balance:', e);
       showToast('Failed to subtract balance.', 'error');
+    }
+  };
+
+  // Admin cancel any user's VIP membership
+  const handleAdminCancelUserVip = async (uid: string, userName?: string) => {
+    if (!window.confirm(`আপনি কি "${userName || uid}"-এর ভিআইপি মেম্বারশিপ ক্যানসেল (বাতিল) করতে চান?`)) {
+      return;
+    }
+    haptic('heavy');
+    try {
+      // 1. Update user document
+      await updateDoc(doc(db, 'users', uid), {
+        isVip: false,
+        vipPackageName: '',
+        vipBadge: '',
+        vipCancelledAt: new Date().toISOString()
+      });
+
+      // 2. Mark any active subscriptions in vip_subscriptions as Cancelled
+      const q = query(
+        collection(db, 'vip_subscriptions'),
+        where('uid', '==', uid),
+        where('status', '==', 'Active')
+      );
+      const snap = await getDocs(q);
+      const updates = snap.docs.map((d) =>
+        updateDoc(doc(db, 'vip_subscriptions', d.id), {
+          status: 'Cancelled',
+          cancelledAt: new Date().toISOString(),
+          cancelledByAdmin: true,
+          cancelReason: 'অ্যাডমিন কর্তৃক ক্যানসেল করা হয়েছে'
+        })
+      );
+      await Promise.all(updates);
+
+      showToast(`ইউজার "${userName || uid}"-এর VIP মেম্বারশিপ সফলভাবে বাতিল করা হয়েছে।`, 'info');
+    } catch (err: any) {
+      console.error('Cancel VIP error:', err);
+      showToast('VIP ক্যানসেল করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    }
+  };
+
+  // Admin make / restore user VIP
+  const handleAdminMakeUserVip = async (uid: string, userName?: string, pkgName = 'VIP Standard (10% Daily)') => {
+    if (!window.confirm(`আপনি কি "${userName || uid}"-কে VIP মেম্বারশিপ সক্রিয় করতে চান?`)) {
+      return;
+    }
+    haptic('success');
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        isVip: true,
+        vipPackageName: pkgName,
+        vipBadge: 'VIP MEMBER',
+        vipActivatedAt: new Date().toISOString()
+      });
+
+      // Create an active subscription
+      await addDoc(collection(db, 'vip_subscriptions'), {
+        uid,
+        userName: userName || 'User',
+        packageName: pkgName,
+        packagePrice: 100,
+        durationDays: 30,
+        dailyReturnPercent: 10,
+        dailyReturnAmount: 10,
+        daysClaimed: 0,
+        totalEarned: 0,
+        status: 'Active',
+        purchasedAt: new Date().toISOString(),
+        purchasedTimestamp: Date.now(),
+        lastAutoCreditTimestamp: Date.now()
+      });
+
+      showToast(`ইউজার "${userName || uid}"-কে VIP মেম্বারশিপ দেওয়া হয়েছে!`, 'success');
+    } catch (err: any) {
+      showToast('VIP সক্রিয় করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    }
+  };
+
+  // Admin Block User handler
+  const handleAdminBlockUser = async () => {
+    if (!blockingTargetUser) return;
+    if (blockingTargetUser.uid === currentUser?.uid || blockingTargetUser.email === 'trsaydul@gmail.com') {
+      showToast('অ্যাডমিন অ্যাকাউন্ট ব্লক করা সম্ভব নয়!', 'error');
+      setBlockingTargetUser(null);
+      return;
+    }
+    setIsProcessingBlockAction(true);
+    haptic('heavy');
+    try {
+      const reason = blockReasonInput.trim() || 'নিরাপত্তা বা পলিসি লঙ্ঘনের কারণে অ্যাকাউন্ট ব্লক করা হয়েছে';
+      const blockedAt = new Date().toISOString();
+
+      // 1. Update users collection in Firestore
+      await updateDoc(doc(db, 'users', blockingTargetUser.uid), {
+        isBlocked: true,
+        blockedAt,
+        blockReason: reason,
+        blockedBy: currentUser?.email || 'admin'
+      });
+
+      // 2. Also sync to auth_users collection if exists
+      try {
+        const authDocRef = doc(db, 'auth_users', blockingTargetUser.uid);
+        const authSnap = await getDoc(authDocRef);
+        if (authSnap.exists()) {
+          await updateDoc(authDocRef, {
+            isBlocked: true,
+            blockedAt,
+            blockReason: reason
+          });
+        }
+      } catch (_) {}
+
+      showToast(`🚫 ইউজার "${blockingTargetUser.name || blockingTargetUser.uid}"-কে সফলভাবে ব্লক করা হয়েছে!`, 'error');
+      setBlockingTargetUser(null);
+      setBlockReasonInput('');
+    } catch (err: any) {
+      console.error('Error blocking user:', err);
+      showToast('ইউজার ব্লক করতে ব্যর্থ: ' + err.message, 'error');
+    } finally {
+      setIsProcessingBlockAction(false);
+    }
+  };
+
+  // Admin Unblock User handler
+  const handleAdminUnblockUser = async (uid: string, userName?: string) => {
+    if (!window.confirm(`আপনি কি "${userName || uid}"-কে আনব্লক (Unblock) করতে চান?`)) {
+      return;
+    }
+    haptic('success');
+    try {
+      // 1. Update users collection
+      await updateDoc(doc(db, 'users', uid), {
+        isBlocked: false,
+        unblockedAt: new Date().toISOString(),
+        blockReason: ''
+      });
+
+      // 2. Also update auth_users collection if exists
+      try {
+        const authDocRef = doc(db, 'auth_users', uid);
+        const authSnap = await getDoc(authDocRef);
+        if (authSnap.exists()) {
+          await updateDoc(authDocRef, {
+            isBlocked: false,
+            blockReason: ''
+          });
+        }
+      } catch (_) {}
+
+      showToast(`✅ ইউজার "${userName || uid}"-কে সফলভাবে আনব্লক করা হয়েছে!`, 'success');
+    } catch (err: any) {
+      console.error('Error unblocking user:', err);
+      showToast('আনব্লক ব্যর্থ: ' + err.message, 'error');
     }
   };
 
@@ -4804,6 +4972,11 @@ export default function App() {
   const executeOrderSubmission = async () => {
     if (!currentUser || !currentService || orderSubmitting) return;
 
+    if (currentUser.isBlocked) {
+      showToast('🚫 আপনার অ্যাকাউন্ট ব্লক করা রয়েছে। কোনো অর্ডার করা সম্ভব নয়।', 'error');
+      return;
+    }
+
     setOrderSubmitting(true);
     haptic('heavy');
 
@@ -5164,6 +5337,11 @@ export default function App() {
     }
 
     if (!currentUser?.uid || depositSubmitting) return;
+
+    if (currentUser.isBlocked) {
+      showToast('🚫 আপনার অ্যাকাউন্ট ব্লক করা রয়েছে। ডিপোজিট গ্রহণ সম্ভব নয়।', 'error');
+      return;
+    }
 
     setDepositSubmitting(true);
     haptic('heavy');
@@ -6044,7 +6222,66 @@ export default function App() {
 
       {/* Main Application */}
       {!showSplash && isLoggedIn && (
-        <div>
+        currentUser?.isBlocked && !isAdminUser ? (
+          <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-center select-none relative overflow-hidden">
+            {/* Ambient red glows */}
+            <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-red-600/15 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div className="max-w-md w-full p-6 sm:p-8 rounded-3xl bg-slate-900 border border-red-500/40 shadow-2xl space-y-5 animate-fade-in relative z-10">
+              <div className="w-20 h-20 mx-auto rounded-3xl bg-red-500/20 text-red-500 border border-red-500/40 flex items-center justify-center text-4xl shadow-lg shadow-red-500/20">
+                <i className="fas fa-user-slash"></i>
+              </div>
+
+              <div className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 inline-block">
+                  ACCOUNT SUSPENDED
+                </span>
+                <h2 className="text-xl sm:text-2xl font-black text-white">
+                  আপনার অ্যাকাউন্টটি ব্লক করা হয়েছে
+                </h2>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  নিরাপত্তা, ভুয়া ট্রানজেকশন বা পলিসি লঙ্ঘনের কারণে আপনার অ্যাকাউন্ট সাময়িকভাবে স্থগিত করা হয়েছে।
+                </p>
+              </div>
+
+              {currentUser.blockReason && (
+                <div className="p-3.5 rounded-2xl bg-black/50 border border-red-500/20 text-left space-y-1">
+                  <span className="text-[10px] font-bold text-red-400 block uppercase">ব্লকের কারণ (Reason):</span>
+                  <p className="text-xs text-slate-200 font-medium">{currentUser.blockReason}</p>
+                </div>
+              )}
+
+              <div className="p-3 bg-white/5 rounded-2xl border border-white/5 text-xs text-slate-400 space-y-1">
+                <div>UID: <span className="font-mono text-white font-bold">{currentUser.uid}</span></div>
+                <p className="text-[11px] text-slate-400">অ্যাকাউন্ট আনব্লক করতে নিচে অ্যাডমিন সাপোর্টে যোগাযোগ করুন।</p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                {supportLinks.map((sl) => (
+                  <a
+                    key={sl.id}
+                    href={sl.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-extrabold text-xs transition flex items-center justify-center gap-2 border border-white/10"
+                  >
+                    <i className={`${sl.icon} text-sm text-amber-400`}></i>
+                    <span>{sl.name}</span>
+                  </a>
+                ))}
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <i className="fas fa-sign-out-alt"></i>
+                <span>লগআউট করুন (Log Out)</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
           {/* HEADER */}
           <header className={`premium-header px-5 pt-6 ${activeTab === 'home' ? 'pb-6' : 'pb-4'}`}>
             <div className={`flex items-center justify-between relative z-10 ${activeTab === 'home' ? 'mb-6' : 'mb-0'}`}>
@@ -9711,6 +9948,7 @@ export default function App() {
               <div className="flex overflow-x-auto gap-2 p-1.5 bg-slate-900/90 rounded-2xl border border-white/10 mb-5 scrollbar-none">
                 {[
                   { id: 'users', label: 'Users & Balance', icon: 'fas fa-users' },
+                  { id: 'blocked_users', label: '🚫 ইউজার ব্লক ও আনব্লক', icon: 'fas fa-user-slash' },
                   { id: 'vip_withdraw', label: '👑 VIP ও উত্তোলন (Withdrawals)', icon: 'fas fa-money-bill-transfer' },
                   { id: 'packages', label: '📦 Packages Manager', icon: 'fas fa-box-open' },
                   { id: 'announcement', label: '👑 Announcement Popup (অ্যানাউন্সমেন্ট)', icon: 'fas fa-crown' },
@@ -9776,20 +10014,88 @@ export default function App() {
                             key={u.uid}
                             className="bg-slate-900/80 border border-white/10 rounded-2xl p-4 space-y-3 shadow-lg"
                           >
-                            <div className="flex items-center justify-between">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
                               <div className="flex items-center gap-2.5">
-                                <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-sm">
-                                  <i className="fas fa-user"></i>
+                                <div
+                                  className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm ${
+                                    u.isVip
+                                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                      : 'bg-blue-500/20 text-blue-400'
+                                  }`}
+                                >
+                                  <i className={`fas ${u.isVip ? 'fa-crown' : 'fa-user'}`}></i>
                                 </div>
                                 <div>
-                                  <h4 className="font-extrabold text-sm text-white">{u.name || 'User'}</h4>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <h4 className="font-extrabold text-sm text-white">{u.name || 'User'}</h4>
+                                    {u.isBlocked && (
+                                      <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[9px] font-black border border-red-500/40 flex items-center gap-1">
+                                        <i className="fas fa-ban text-[8px]"></i>
+                                        <span>BLOCKED</span>
+                                      </span>
+                                    )}
+                                    {u.isVip && (
+                                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[9px] font-black border border-amber-500/30 flex items-center gap-1">
+                                        <i className="fas fa-crown text-[8px]"></i>
+                                        <span>{u.vipPackageName || 'VIP MEMBER'}</span>
+                                      </span>
+                                    )}
+                                  </div>
                                   <p className="text-[10px] text-slate-400 font-mono">UID: {u.uid}</p>
                                 </div>
                               </div>
 
-                              <div className="text-right">
-                                <span className="text-[9px] text-slate-500 font-bold uppercase block">Current Balance</span>
-                                <span className="text-base font-black text-emerald-400">৳ {(u.balance || 0).toFixed(2)}</span>
+                              <div className="flex items-center gap-2 flex-wrap justify-end">
+                                {/* Block / Unblock Action Button */}
+                                {u.isBlocked ? (
+                                  <button
+                                    onClick={() => handleAdminUnblockUser(u.uid, u.name)}
+                                    className="px-2.5 py-1 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold transition flex items-center gap-1 active:scale-95"
+                                    title="ইউজারকে আনব্লক করুন"
+                                  >
+                                    <i className="fas fa-lock-open"></i>
+                                    <span>আনব্লক</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => {
+                                      setBlockingTargetUser(u);
+                                      setBlockReasonInput('');
+                                      haptic('light');
+                                    }}
+                                    className="px-2.5 py-1 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 text-[10px] font-bold transition flex items-center gap-1 active:scale-95"
+                                    title="ইউজারকে ব্লক করুন"
+                                  >
+                                    <i className="fas fa-user-slash"></i>
+                                    <span>ব্লক</span>
+                                  </button>
+                                )}
+
+                                {/* VIP Action Button */}
+                                {u.isVip ? (
+                                  <button
+                                    onClick={() => handleAdminCancelUserVip(u.uid, u.name)}
+                                    className="px-2.5 py-1 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 text-[10px] font-bold transition flex items-center gap-1 active:scale-95"
+                                    title="ভিআইপি বাতিল করুন"
+                                  >
+                                    <i className="fas fa-ban"></i>
+                                    <span>VIP ক্যানসেল</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleAdminMakeUserVip(u.uid, u.name)}
+                                    className="px-2.5 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10px] font-bold transition flex items-center gap-1 active:scale-95"
+                                    title="VIP মেম্বারশিপ দিন"
+                                  >
+                                    <i className="fas fa-crown"></i>
+                                    <span>VIP দিন</span>
+                                  </button>
+                                )}
+
+                                <div className="text-right">
+                                  <span className="text-[9px] text-slate-500 font-bold uppercase block">Current Balance</span>
+                                  <span className="text-base font-black text-emerald-400">৳ {(u.balance || 0).toFixed(2)}</span>
+                                </div>
                               </div>
                             </div>
 
@@ -9861,6 +10167,231 @@ export default function App() {
                           </div>
                         );
                       })}
+                  </div>
+                </div>
+              )}
+
+              {/* SUB TAB: BLOCKED & UNBLOCKED USERS MANAGER (আলাদা ইউজার ব্লক ও আনব্লক ম্যানেজার) */}
+              {adminSubTab === 'blocked_users' && (
+                <div className="space-y-4 animate-fade-in">
+                  {/* Top Header Banner */}
+                  <div className="p-4 rounded-3xl bg-gradient-to-r from-red-950/40 via-slate-900 to-indigo-950/40 border border-red-500/30 shadow-xl flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-red-600 to-rose-500 text-white flex items-center justify-center text-xl font-black shadow-lg shadow-red-500/30">
+                        <i className="fas fa-user-slash"></i>
+                      </div>
+                      <div>
+                        <h3 className="text-base font-black text-white flex items-center gap-2">
+                          <span>ইউজার ব্লক ও আনব্লক ম্যানেজার</span>
+                          <span className="text-[10px] bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full font-bold border border-red-500/30">
+                            SECURITY & ACCESS CONTROL
+                          </span>
+                        </h3>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          সন্দেহজনক কার্যকলাপ, ফেক ডিপোজিট বা নিয়ম ভঙ্গকারী ইউজারদের ব্লক করুন অথবা পূর্বে ব্লক করা ইউজারদের আনব্লক করুন
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Summary Metric Cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                    <div className="bg-slate-900/80 p-3 rounded-2xl border border-red-500/30 shadow-sm">
+                      <span className="text-[10px] font-bold text-red-400 uppercase block">মোট ব্লকড ইউজার</span>
+                      <div className="text-xl font-black text-red-400 font-mono mt-0.5">
+                        {allUsersList.filter((u) => u.isBlocked).length} <span className="text-xs text-slate-400 font-normal">জন</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/80 p-3 rounded-2xl border border-emerald-500/30 shadow-sm">
+                      <span className="text-[10px] font-bold text-emerald-400 uppercase block">সক্রিয় ইউজার (Active)</span>
+                      <div className="text-xl font-black text-emerald-300 font-mono mt-0.5">
+                        {allUsersList.filter((u) => !u.isBlocked).length} <span className="text-xs text-slate-400 font-normal">জন</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/80 p-3 rounded-2xl border border-white/10 shadow-sm col-span-2 sm:col-span-1">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">মোট নিবন্ধিত ইউজার</span>
+                      <div className="text-xl font-black text-white font-mono mt-0.5">
+                        {allUsersList.length} <span className="text-xs text-slate-400 font-normal">জন</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Search & Filter Bar */}
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        className="input-modern pl-10 text-xs py-2"
+                        placeholder="Search by User Name, UID, or Email..."
+                        value={blockedSearchQuery}
+                        onChange={(e) => setBlockedSearchQuery(e.target.value)}
+                      />
+                      <i className="fas fa-search absolute left-3.5 top-2.5 text-slate-500 text-xs"></i>
+                      {blockedSearchQuery && (
+                        <button
+                          onClick={() => setBlockedSearchQuery('')}
+                          className="absolute right-3 top-2.5 text-slate-400 hover:text-white text-xs"
+                        >
+                          <i className="fas fa-times"></i>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex gap-1.5 p-1 bg-black/40 rounded-xl border border-white/10 self-start sm:self-auto overflow-x-auto">
+                      {[
+                        { id: 'blocked', label: '🚫 ব্লকড ইউজার', count: allUsersList.filter((u) => u.isBlocked).length },
+                        { id: 'active', label: '🟢 সক্রিয় ইউজার', count: allUsersList.filter((u) => !u.isBlocked).length },
+                        { id: 'all', label: '👥 সকল ইউজার', count: allUsersList.length }
+                      ].map((tab) => (
+                        <button
+                          key={tab.id}
+                          onClick={() => {
+                            setBlockedTabFilter(tab.id as any);
+                            haptic('light');
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+                            blockedTabFilter === tab.id
+                              ? 'bg-red-600 text-white shadow-md'
+                              : 'text-slate-400 hover:text-white hover:bg-white/5'
+                          }`}
+                        >
+                          <span>{tab.label}</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/40 font-mono">
+                            {tab.count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Users Cards in Block Manager */}
+                  <div className="space-y-3">
+                    {allUsersList
+                      .filter((u) => {
+                        if (blockedTabFilter === 'blocked' && !u.isBlocked) return false;
+                        if (blockedTabFilter === 'active' && u.isBlocked) return false;
+                        if (blockedSearchQuery.trim()) {
+                          const q = blockedSearchQuery.toLowerCase().trim();
+                          const matchUid = (u.uid || '').toLowerCase().includes(q);
+                          const matchName = (u.name || '').toLowerCase().includes(q);
+                          const matchEmail = (u.email || '').toLowerCase().includes(q);
+                          return matchUid || matchName || matchEmail;
+                        }
+                        return true;
+                      })
+                      .map((u) => {
+                        const isBlocked = !!u.isBlocked;
+
+                        return (
+                          <div
+                            key={u.uid}
+                            className={`p-4 rounded-2xl border transition-all shadow-md ${
+                              isBlocked
+                                ? 'bg-red-950/20 border-red-500/40'
+                                : 'bg-slate-900/80 border-white/10 hover:border-white/20'
+                            }`}
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div className="flex items-start gap-3">
+                                <div
+                                  className={`w-11 h-11 rounded-2xl flex items-center justify-center text-lg font-black shrink-0 ${
+                                    isBlocked
+                                      ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                      : 'bg-blue-500/20 text-blue-400 border border-blue-500/20'
+                                  }`}
+                                >
+                                  <i className={`fas ${isBlocked ? 'fa-user-slash' : 'fa-user'}`}></i>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h4 className="font-extrabold text-sm text-white">{u.name || 'User'}</h4>
+                                    <span
+                                      className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 ${
+                                        isBlocked
+                                          ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                                          : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                      }`}
+                                    >
+                                      <span
+                                        className={`w-1.5 h-1.5 rounded-full ${
+                                          isBlocked ? 'bg-red-400 animate-ping' : 'bg-emerald-400'
+                                        }`}
+                                      ></span>
+                                      <span>{isBlocked ? '🚫 অ্যাকাউন্ট ব্লকড (BLOCKED)' : '🟢 সক্রিয় (ACTIVE)'}</span>
+                                    </span>
+
+                                    {u.isVip && (
+                                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[9px] font-black border border-amber-500/30 flex items-center gap-1">
+                                        <i className="fas fa-crown text-[8px]"></i>
+                                        <span>{u.vipPackageName || 'VIP MEMBER'}</span>
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center gap-x-3 text-xs text-slate-400">
+                                    <span className="font-mono text-slate-400">UID: {u.uid}</span>
+                                    {u.email && <span className="text-slate-500">{u.email}</span>}
+                                    <span className="text-slate-300 font-bold">ব্যালেন্স: <strong className="text-emerald-400 font-mono">৳{(u.balance || 0).toFixed(2)}</strong></span>
+                                  </div>
+
+                                  {isBlocked && (
+                                    <div className="pt-1 text-xs space-y-0.5">
+                                      <p className="text-red-400 font-medium flex items-center gap-1.5">
+                                        <i className="fas fa-circle-exclamation text-[10px]"></i>
+                                        <span>ব্লকের কারণ: <strong className="text-white">{u.blockReason || 'নিয়ম লঙ্ঘন'}</strong></span>
+                                      </p>
+                                      {u.blockedAt && (
+                                        <p className="text-[11px] text-slate-500">
+                                          ব্লক করার তারিখ: {new Date(u.blockedAt).toLocaleString('bn-BD')}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 self-end sm:self-center">
+                                {isBlocked ? (
+                                  <button
+                                    onClick={() => handleAdminUnblockUser(u.uid, u.name)}
+                                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black transition flex items-center gap-2 shadow-lg shadow-emerald-600/30 active:scale-95"
+                                  >
+                                    <i className="fas fa-lock-open"></i>
+                                    <span>আনব্লক করুন (Unblock)</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => {
+                                      setBlockingTargetUser(u);
+                                      setBlockReasonInput('');
+                                      haptic('light');
+                                    }}
+                                    className="px-4 py-2 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/40 text-xs font-bold transition flex items-center gap-2 active:scale-95"
+                                  >
+                                    <i className="fas fa-user-slash"></i>
+                                    <span>ব্লক করুন (Block)</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                    {allUsersList.filter((u) => {
+                      if (blockedTabFilter === 'blocked' && !u.isBlocked) return false;
+                      if (blockedTabFilter === 'active' && u.isBlocked) return false;
+                      return true;
+                    }).length === 0 && (
+                      <div className="p-8 text-center rounded-3xl bg-slate-900/50 border border-white/10 text-slate-400 text-xs">
+                        {blockedTabFilter === 'blocked'
+                          ? '🎉 চমৎকার! বর্তমানে কোনো ব্লকড ইউজার নেই।'
+                          : 'কোনো ইউজার রেকর্ড পাওয়া যায়নি।'}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -15597,6 +16128,113 @@ export default function App() {
             onActionClick={handleBannerActionClick}
           />
 
+          {/* Admin Block User Confirmation Modal */}
+          {blockingTargetUser && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-slate-900 border border-red-500/50 rounded-3xl max-w-md w-full p-5 space-y-4 shadow-2xl relative">
+                <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <i className="fas fa-user-slash text-red-400 text-lg"></i>
+                    <span>ইউজার অ্যাকাউন্ট ব্লক করুন</span>
+                  </h3>
+                  <button
+                    onClick={() => setBlockingTargetUser(null)}
+                    className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center"
+                  >
+                    <i className="fas fa-times text-xs"></i>
+                  </button>
+                </div>
+
+                {/* Target User Details */}
+                <div className="p-3.5 bg-black/40 rounded-2xl border border-white/5 space-y-2 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">নাম:</span>
+                    <span className="font-black text-white">{blockingTargetUser.name || 'User'}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">UID:</span>
+                    <span className="font-mono text-slate-300">{blockingTargetUser.uid}</span>
+                  </div>
+                  {blockingTargetUser.email && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">ইমেইল:</span>
+                      <span className="text-slate-300">{blockingTargetUser.email}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">ব্যালেন্স:</span>
+                    <span className="font-bold text-emerald-400 font-mono">
+                      ৳{(blockingTargetUser.balance || 0).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Reason selector & input */}
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <label className="text-slate-300 font-bold block mb-1">ব্লক করার কারণ (Reason):</label>
+                    <input
+                      type="text"
+                      value={blockReasonInput}
+                      onChange={(e) => setBlockReasonInput(e.target.value)}
+                      placeholder="যেমন: ভুয়া ডিপোজিট সাবমিট / স্প্যামিং"
+                      className="input-modern py-2 text-xs"
+                    />
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {[
+                        'ভুয়া ট্রানজেকশন / ফেক ডিপোজিট',
+                        'স্প্যামিং ও অপব্যবহার',
+                        'একাধিক ফেইক অ্যাকাউন্ট',
+                        'শর্তাবলী ও পলিসি লঙ্ঘন',
+                        'অ্যাকাউন্ট সাময়িক স্থগিত'
+                      ].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setBlockReasonInput(preset)}
+                          className="text-[10px] px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-white/5 transition"
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-red-950/40 border border-red-500/20 text-[11px] text-red-300 flex items-start gap-2.5">
+                  <i className="fas fa-triangle-exclamation text-red-400 text-sm shrink-0 mt-0.5"></i>
+                  <span>
+                    অ্যাকাউন্ট ব্লক করলে ইউজার কোনো নতুন অর্ডার, ডিপোজিট বা উইথড্র করতে পারবে না এবং সাইটে ঢোকার সাথে সাথে
+                    ব্লক স্ক্রিন দেখতে পাবে। আপনি যেকোনো সময় এই ইউজারকে পুনরায় আনব্লক করতে পারবেন।
+                  </span>
+                </div>
+
+                <div className="flex gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setBlockingTargetUser(null)}
+                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition"
+                  >
+                    ফিরে যান
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAdminBlockUser}
+                    disabled={isProcessingBlockAction}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 active:scale-95 disabled:opacity-50"
+                  >
+                    {isProcessingBlockAction ? (
+                      <i className="fas fa-spinner fa-spin"></i>
+                    ) : (
+                      <i className="fas fa-user-slash"></i>
+                    )}
+                    <span>ব্লক নিশ্চিত করুন</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 3D Theme Customizer Modal */}
           {show3DThemeModal && (
             <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
@@ -15744,7 +16382,8 @@ export default function App() {
             </div>
           )}
         </div>
-      )}
+      )
+    )}
     </div>
   );
 }

@@ -39,7 +39,12 @@ export interface UserVIPSubscription {
   lastClaimedTimestamp?: number;
   lastAutoCreditAt?: string;
   lastAutoCreditTimestamp?: number;
-  status: 'Active' | 'Completed' | 'Expired';
+  status: 'Active' | 'Completed' | 'Expired' | 'Cancelled';
+  cancelledAt?: string;
+  cancelledByAdmin?: boolean;
+  cancelReason?: string;
+  refundAmount?: number;
+  reactivatedAt?: string;
 }
 
 export interface WithdrawalMethodConfig {
