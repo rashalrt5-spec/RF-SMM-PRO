@@ -45,6 +45,7 @@ interface LiveAISupportModalProps {
   onNavigateToWithdraw?: () => void;
   onNavigateToTasks?: () => void;
   haptic?: (type?: 'light' | 'heavy' | 'success' | 'error') => void;
+  isVipEnabled?: boolean;
 }
 
 const QUICK_PROMPTS = [
@@ -71,6 +72,7 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
   onNavigateToWithdraw,
   onNavigateToTasks,
   haptic = () => {},
+  isVipEnabled = true,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputVal, setInputVal] = useState('');
@@ -79,6 +81,18 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
   const [videoLinkInput, setVideoLinkInput] = useState('');
   const [showVideoInputModal, setShowVideoInputModal] = useState(false);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
+
+  // Filter out VIP quick prompts when VIP is disabled
+  const availableQuickPrompts = React.useMemo(() => {
+    return QUICK_PROMPTS.filter((p) => {
+      if (!isVipEnabled || !onNavigateToVIP) {
+        if (p.label.includes('VIP') || p.prompt.includes('VIP') || p.prompt.includes('১০%')) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [isVipEnabled, onNavigateToVIP]);
   
   const [isLoading, setIsLoading] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -158,10 +172,11 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
             setMessages(fetched);
           } else {
             // Initialize initial welcome message
+            const vipText = isVipEnabled ? ', **👑 VIP প্যাকেজ ও দৈনিক ১০% অটো লাভ**' : '';
             const welcomeMsg: ChatMessage = {
               id: 'welcome-1',
               sender: 'ai',
-              text: `👋 স্বাগতম **${currentUser?.name || 'প্রিয় গ্রাহক'}**! আমি **RF SMM AI লাইভ সাপোর্ট সহকারী**।\n\nসোশ্যাল মিডিয়া সার্ভিস, ইনস্ট্যান্ট বিকাশ/নগদ ডিপোজিট, **👑 VIP প্যাকেজ ও দৈনিক ১০% অটো লাভ**, **💸 ক্যাশআউট/উইথড্র**, ৫% রেফারেল বোনাস বা অর্ডার সংক্রান্ত যেকোনো প্রশ্ন বা সমস্যা আমাকে জানান। আপনি ছবি ও স্ক্রিনশট বা ভিডিও যুক্ত করেও সাহায্য চাইতে পারেন! ⚡`,
+              text: `👋 স্বাগতম **${currentUser?.name || 'প্রিয় গ্রাহক'}**! আমি **RF SMM AI লাইভ সাপোর্ট সহকারী**।\n\nসোশ্যাল মিডিয়া সার্ভিস, ইনস্ট্যান্ট বিকাশ/নগদ ডিপোজিট${vipText}, **💸 ক্যাশআউট/উইথড্র**, ৫% রেফারেল বোনাস বা অর্ডার সংক্রান্ত যেকোনো প্রশ্ন বা সমস্যা আমাকে জানান। আপনি ছবি ও স্ক্রিনশট বা ভিডিও যুক্ত করেও সাহায্য চাইতে পারেন! ⚡`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               source: 'smart_engine',
             };
@@ -184,18 +199,19 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
           // fallback
         }
       } else {
+        const vipGuestText = isVipEnabled ? ', **👑 VIP প্যাকেজ (দৈনিক ১০% লাভ)**' : '';
         setMessages([
           {
             id: 'welcome-guest',
             sender: 'ai',
-            text: `👋 স্বাগতম! আমি **RF SMM AI লাইভ সাপোর্ট সহকারী**। সোশ্যাল মিডিয়া সার্ভিস, ডিপোজিট, **👑 VIP প্যাকেজ (দৈনিক ১০% লাভ)** ও **💸 ক্যাশআউট** সংক্রান্ত যেকোনো বিষয়ে আমি আপনাকে সার্বক্ষণিক সাহায্য করতে পারি।`,
+            text: `👋 স্বাগতম! আমি **RF SMM AI লাইভ সাপোর্ট সহকারী**। সোশ্যাল মিডিয়া সার্ভিস, ডিপোজিট${vipGuestText} ও **💸 ক্যাশআউট** সংক্রান্ত যেকোনো বিষয়ে আমি আপনাকে সার্বক্ষণিক সাহায্য করতে পারি।`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             source: 'smart_engine',
           },
         ]);
       }
     }
-  }, [isOpen, currentUser?.uid]);
+  }, [isOpen, currentUser?.uid, isVipEnabled]);
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -630,7 +646,7 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
 
           {/* Quick Hub Navigation Pills */}
           <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5">
-            {onNavigateToVIP && (
+            {isVipEnabled && onNavigateToVIP && (
               <button
                 type="button"
                 onClick={() => {
@@ -815,7 +831,7 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
                   {/* Contextual Action Buttons for AI Responses */}
                   {!isUser && (
                     <div className="mt-2.5 pt-2 border-t border-white/10 flex flex-wrap gap-1.5">
-                      {(msg.text.includes('VIP') || msg.text.includes('ভিআইপি') || msg.text.includes('অটো লাভ')) && onNavigateToVIP && (
+                      {isVipEnabled && (msg.text.includes('VIP') || msg.text.includes('ভিআইপি') || msg.text.includes('অটো লাভ')) && onNavigateToVIP && (
                         <button
                           type="button"
                           onClick={() => {
@@ -978,7 +994,7 @@ export const LiveAISupportModal: React.FC<LiveAISupportModalProps> = ({
           <span className="text-[10px] text-slate-400 font-bold shrink-0">
             <i className="fas fa-bolt text-amber-400 mr-1"></i>দ্রুত প্রশ্ন:
           </span>
-          {QUICK_PROMPTS.map((qp, idx) => (
+          {availableQuickPrompts.map((qp, idx) => (
             <button
               key={idx}
               disabled={isLoading}

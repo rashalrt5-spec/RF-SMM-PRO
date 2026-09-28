@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db, collection, query, where, onSnapshot } from '../firebase';
+import { db, collection, query, where, onSnapshot, doc } from '../firebase';
 import { UserVIPSubscription } from '../types/vip';
 
 export interface ProfileNextAutoProfitDisplayProps {
@@ -23,6 +23,25 @@ export const ProfileNextAutoProfitDisplay: React.FC<ProfileNextAutoProfitDisplay
   const [subscriptions, setSubscriptions] = useState<UserVIPSubscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(Date.now());
+  const [isVipEnabled, setIsVipEnabled] = useState(true);
+
+  // Listen to VIP Master setting
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(
+        doc(db, 'vip_settings', 'general'),
+        (snap) => {
+          if (snap.exists()) {
+            setIsVipEnabled(snap.data().isVipEnabled !== false);
+          }
+        },
+        (err) => console.warn('VIP settings fetch notice:', err)
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn(e);
+    }
+  }, []);
 
   // 1-second live countdown ticker
   useEffect(() => {
@@ -160,6 +179,10 @@ export const ProfileNextAutoProfitDisplay: React.FC<ProfileNextAutoProfitDisplay
   const totalRemainingDays = primarySub
     ? (primarySub.durationDays || 30) - (primarySub.daysClaimed || 0)
     : 0;
+
+  if (!isVipEnabled) {
+    return null;
+  }
 
   if (loading) {
     return (

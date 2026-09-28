@@ -7,6 +7,7 @@ import {
   where,
   onSnapshot,
   updateDoc,
+  setDoc,
   addDoc,
   getDoc,
   getDocs
@@ -52,6 +53,7 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
   const [packageBuyersCountMap, setPackageBuyersCountMap] = useState<Record<string, number>>({});
   const [vipHubBannerUrl, setVipHubBannerUrl] = useState('');
+  const [isVipEnabled, setIsVipEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
 
   // Sub-section toggle inside single VIP project card
@@ -94,14 +96,16 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
     return () => clearInterval(timer);
   }, []);
 
-  // 0. Listen to VIP Hub general settings (Hub Banner)
+  // 0. Listen to VIP Hub general settings (Hub Banner & isVipEnabled)
   useEffect(() => {
     try {
       const unsub = onSnapshot(
         doc(db, 'vip_settings', 'general'),
         (snap) => {
           if (snap.exists()) {
-            setVipHubBannerUrl(snap.data().hubBannerUrl || '');
+            const data = snap.data();
+            setVipHubBannerUrl(data.hubBannerUrl || '');
+            setIsVipEnabled(data.isVipEnabled !== false);
           }
         },
         (err) => console.warn('VIP Hub banner error:', err)
@@ -487,8 +491,15 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
         const pkgRef = doc(db, 'vip_packages', selectedPkgForBuy.id);
         const pkgSnap = await getDoc(pkgRef);
         if (pkgSnap.exists()) {
-          const prevCount = pkgSnap.data().buyersCount || 0;
+          const prevCount = typeof pkgSnap.data().buyersCount === 'number'
+            ? pkgSnap.data().buyersCount
+            : (selectedPkgForBuy.buyersCount || selectedPkgForBuy.baseBuyersCount || 0);
           await updateDoc(pkgRef, { buyersCount: prevCount + 1 });
+        } else {
+          const prevCount = typeof selectedPkgForBuy.buyersCount === 'number'
+            ? selectedPkgForBuy.buyersCount
+            : (selectedPkgForBuy.baseBuyersCount || 0);
+          await setDoc(pkgRef, { ...selectedPkgForBuy, buyersCount: prevCount + 1 }, { merge: true });
         }
       } catch (pkgErr) {
         console.warn('Package buyers count update notice:', pkgErr);
@@ -600,6 +611,27 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
       setIsSubmittingWithdraw(false);
     }
   };
+
+  if (!isVipEnabled) {
+    return (
+      <div className="p-8 text-center rounded-3xl bg-slate-900/90 border border-white/10 space-y-4 max-w-md mx-auto my-12 animate-fade-in shadow-2xl">
+        <div className="w-16 h-16 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center text-3xl mx-auto border border-red-500/30">
+          <i className="fas fa-ban"></i>
+        </div>
+        <h3 className="text-base font-black text-white">VIP সার্ভিস বর্তমানে বন্ধ রয়েছে</h3>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          অ্যাডমিন কর্তৃক ভিআইপি ফিচার সাময়িকভাবে নিষ্ক্রিয় রাখা হয়েছে। অনুগ্রহ করে পরে আবার চেক করুন।
+        </p>
+        <button
+          type="button"
+          onClick={() => onNavigateTab?.('home')}
+          className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs transition shadow-lg shadow-amber-500/20"
+        >
+          হোমে ফিরে যান
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -828,6 +860,22 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
             </div>
           )}
 
+          {/* Live Total VIP Buyers Counter Header */}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-2xl bg-gradient-to-r from-amber-950/40 via-slate-900 to-emerald-950/40 border border-amber-500/30 shadow-md">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span className="text-xs font-black text-amber-300">
+                🔥 মোট {packages.reduce((sum, p) => sum + (typeof p.buyersCount === 'number' ? p.buyersCount : (p.baseBuyersCount || 0)), 0)} জন সফল মেম্বার VIP প্যাকেজ নিয়েছেন!
+              </span>
+            </div>
+            <span className="text-[10px] text-emerald-300 font-bold bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+              <i className="fas fa-bolt text-amber-400 text-[9px]"></i> লাইভ আপডেট
+            </span>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {packages
               .filter((p) => p.isActive !== false)
@@ -839,10 +887,9 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
                 const isAffordable = userBalance >= pkg.price;
                 const isCurrentActive = activeVIPSub?.packageId === pkg.id;
                 const hasOtherActive = !!activeVIPSub && !isCurrentActive;
-                const buyersCount = Math.max(
-                  pkg.buyersCount || 0,
-                  (packageBuyersCountMap[pkg.id] || 0) + (pkg.baseBuyersCount || 0)
-                );
+                const buyersCount = typeof pkg.buyersCount === 'number'
+                  ? pkg.buyersCount
+                  : Math.max(0, (packageBuyersCountMap[pkg.id] || 0) + (pkg.baseBuyersCount || 0));
 
                 return (
                   <div
@@ -903,7 +950,8 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
                           <div className="min-w-0">
                             <h5 className="text-sm font-black text-white leading-tight truncate">{pkg.name}</h5>
                             {/* Buyers Count Badge */}
-                            <div className="mt-0.5 inline-flex items-center gap-1 text-[9px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded-md">
+                            <div className="mt-0.5 inline-flex items-center gap-1.5 text-[9px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-md shadow-sm">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                               <i className="fas fa-users text-amber-400 text-[8px]"></i>
                               <span>{buyersCount} জন কিনেছেন</span>
                             </div>
@@ -1465,10 +1513,9 @@ export const ProfileVIPAndWithdrawHub: React.FC<ProfileVIPAndWithdrawHubProps> =
         const pkgDurationDays = selectedPkgForBuy.durationDays || 30;
         const pkgDailyAmt = (selectedPkgForBuy.price * pkgReturnPercent) / 100;
         const pkgTotalProfit = pkgDailyAmt * pkgDurationDays;
-        const totalBuyers = Math.max(
-          selectedPkgForBuy.buyersCount || 0,
-          (packageBuyersCountMap[selectedPkgForBuy.id] || 0) + (selectedPkgForBuy.baseBuyersCount || 0)
-        );
+        const totalBuyers = typeof selectedPkgForBuy.buyersCount === 'number'
+          ? selectedPkgForBuy.buyersCount
+          : Math.max(0, (packageBuyersCountMap[selectedPkgForBuy.id] || 0) + (selectedPkgForBuy.baseBuyersCount || 0));
 
         return (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">

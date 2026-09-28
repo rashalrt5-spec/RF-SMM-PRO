@@ -65,10 +65,19 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
   const [pkgIsActive, setPkgIsActive] = useState(true);
   const [isSavingPkg, setIsSavingPkg] = useState(false);
 
+  // VIP Buyers Count Live Controls State
+  const [pkgBuyersCount, setPkgBuyersCount] = useState('0');
+  const [updatingBuyersPkgId, setUpdatingBuyersPkgId] = useState<string | null>(null);
+  const [buyersCountInputMap, setBuyersCountInputMap] = useState<Record<string, string>>({});
+
   // VIP Hub General Header Banner state
   const [vipHubBannerUrl, setVipHubBannerUrl] = useState('');
   const [isUploadingHubBanner, setIsUploadingHubBanner] = useState(false);
   const [isSavingHubBanner, setIsSavingHubBanner] = useState(false);
+
+  // VIP Module Master On / Off Switch State
+  const [isVipEnabled, setIsVipEnabled] = useState(true);
+  const [isTogglingVip, setIsTogglingVip] = useState(false);
 
   // Logo file upload handler
   const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -155,6 +164,12 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
   const [cancelReasonText, setCancelReasonText] = useState('অ্যাডমিন কর্তৃক ভিআইপি ক্যানসেল করা হয়েছে');
   const [isProcessingSubAction, setIsProcessingSubAction] = useState(false);
 
+  // VIP Duration & Days Adjustment State
+  const [editingDurationSub, setEditingDurationSub] = useState<UserVIPSubscription | null>(null);
+  const [modalDurationDays, setModalDurationDays] = useState<string>('30');
+  const [modalDaysClaimed, setModalDaysClaimed] = useState<string>('0');
+  const [isSavingDuration, setIsSavingDuration] = useState(false);
+
   // 1. Listen to all withdrawals
   useEffect(() => {
     try {
@@ -226,14 +241,16 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
     }
   }, []);
 
-  // 4. Listen to VIP Hub general settings (Hub Banner)
+  // 4. Listen to VIP Hub general settings (Hub Banner & Master On/Off)
   useEffect(() => {
     try {
       const unsub = onSnapshot(
         doc(db, 'vip_settings', 'general'),
         (snap) => {
           if (snap.exists()) {
-            setVipHubBannerUrl(snap.data().hubBannerUrl || '');
+            const data = snap.data();
+            setVipHubBannerUrl(data.hubBannerUrl || '');
+            setIsVipEnabled(data.isVipEnabled !== false);
           }
         },
         (err) => console.warn('VIP Hub settings error:', err)
@@ -263,6 +280,34 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
       showToast('ব্যানার সংরক্ষণ করতে সমস্যা হয়েছে: ' + err.message, 'error');
     } finally {
       setIsSavingHubBanner(false);
+    }
+  };
+
+  // Master Toggle VIP Module (On / Off for users)
+  const handleToggleVipModule = async () => {
+    const newStatus = !isVipEnabled;
+    setIsTogglingVip(true);
+    haptic('heavy');
+    try {
+      await setDoc(
+        doc(db, 'vip_settings', 'general'),
+        {
+          isVipEnabled: newStatus,
+          vipStatusUpdatedAt: new Date().toISOString()
+        },
+        { merge: true }
+      );
+      showToast(
+        newStatus
+          ? '🎉 VIP অপশন সফলভাবে চালু করা হয়েছে! এখন ইউজার প্যানেলে VIP অপশন প্রদর্শিত হবে।'
+          : '🔒 VIP অপশন সফলভাবে বন্ধ করা হয়েছে! এখন ইউজার প্যানেলে কোনো VIP অপশন প্রদর্শিত হবে না।',
+        newStatus ? 'success' : 'info'
+      );
+    } catch (err: any) {
+      console.error(err);
+      showToast('VIP স্ট্যাটাস পরিবর্তন করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    } finally {
+      setIsTogglingVip(false);
     }
   };
 
@@ -348,12 +393,45 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
     }
   };
 
+  // Live adjust buyers count for a package (+ / -)
+  const handleAdjustBuyersCount = async (pkg: VIPPackage, delta: number) => {
+    const currentCount = typeof pkg.buyersCount === 'number' ? pkg.buyersCount : (pkg.baseBuyersCount || 0);
+    const newCount = Math.max(0, currentCount + delta);
+    haptic('light');
+    try {
+      setUpdatingBuyersPkgId(pkg.id);
+      await setDoc(doc(db, 'vip_packages', pkg.id), { ...pkg, buyersCount: newCount }, { merge: true });
+      showToast(`✅ ${pkg.name} ক্রেতা সংখ্যা লাইভ আপডেট হয়েছে: ${newCount} জন`, 'success');
+    } catch (err: any) {
+      console.error(err);
+      showToast('ক্রেতা সংখ্যা আপডেট করতে সমস্যা: ' + err.message, 'error');
+    } finally {
+      setUpdatingBuyersPkgId(null);
+    }
+  };
+
+  const handleSetExactBuyersCount = async (pkg: VIPPackage, exactCount: number) => {
+    const newCount = Math.max(0, exactCount);
+    haptic('light');
+    try {
+      setUpdatingBuyersPkgId(pkg.id);
+      await setDoc(doc(db, 'vip_packages', pkg.id), { ...pkg, buyersCount: newCount }, { merge: true });
+      showToast(`✅ ${pkg.name} ক্রেতা সংখ্যা লাইভ সেট হয়েছে: ${newCount} জন`, 'success');
+    } catch (err: any) {
+      console.error(err);
+      showToast('সেট করতে সমস্যা: ' + err.message, 'error');
+    } finally {
+      setUpdatingBuyersPkgId(null);
+    }
+  };
+
   // Save / Update VIP Package
   const handleSavePackage = async (e: React.FormEvent) => {
     e.preventDefault();
     const priceNum = parseFloat(pkgPrice);
     const returnNum = parseFloat(pkgDailyPercent) || 10;
     const durationNum = parseInt(pkgDuration, 10) || 30;
+    const buyersCountNum = Math.max(0, parseInt(pkgBuyersCount, 10) || 0);
 
     if (!pkgName.trim() || isNaN(priceNum) || priceNum <= 0) {
       showToast('প্যাকেজের নাম ও সঠিক মূল্য দিন!', 'error');
@@ -376,7 +454,8 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
         badge: pkgBadge.trim() || `${returnNum}% Daily`,
         description: pkgDesc.trim() || `প্রতিদিন ${returnNum}% লাভ (৳${dailyAmt}) হিসেবে ${durationNum} দিনে ৳${dailyAmt * durationNum} আয়!`,
         isActive: pkgIsActive,
-        colorTheme: priceNum <= 100 ? 'amber' : priceNum <= 200 ? 'blue' : priceNum <= 300 ? 'purple' : 'rose'
+        colorTheme: priceNum <= 100 ? 'amber' : priceNum <= 200 ? 'blue' : priceNum <= 300 ? 'purple' : 'rose',
+        buyersCount: buyersCountNum,
       };
 
       if (editingPkgId) {
@@ -400,6 +479,7 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
       setPkgBadge('🔥 10% Daily');
       setPkgDesc('');
       setPkgIsActive(true);
+      setPkgBuyersCount('0');
     } catch (err: any) {
       console.error(err);
       showToast('সেভ করতে সমস্যা হয়েছে: ' + err.message, 'error');
@@ -549,6 +629,149 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
       showToast('ভিআইপি পুনরায় চালু করতে সমস্যা হয়েছে: ' + err.message, 'error');
     } finally {
       setIsProcessingSubAction(false);
+    }
+  };
+
+  // Quick direct adjust duration (+ / - days)
+  const handleQuickAdjustDuration = async (sub: UserVIPSubscription, deltaDays: number) => {
+    const currentDuration = sub.durationDays || 30;
+    const newDuration = Math.max(1, currentDuration + deltaDays);
+    const claimed = sub.daysClaimed || 0;
+    const newStatus = claimed < newDuration ? 'Active' : 'Completed';
+    haptic('light');
+    try {
+      await updateDoc(doc(db, 'vip_subscriptions', sub.id), {
+        durationDays: newDuration,
+        status: sub.status === 'Cancelled' ? 'Cancelled' : newStatus,
+        durationUpdatedAt: new Date().toISOString()
+      });
+      if (newStatus === 'Active' && sub.status !== 'Cancelled' && sub.uid) {
+        await updateDoc(doc(db, 'users', sub.uid), {
+          isVip: true,
+          vipPackageName: sub.packageName,
+          vipBadge: 'VIP MEMBER'
+        });
+      }
+      const monthsStr = (newDuration / 30).toFixed(1);
+      const isMonthExact = Math.abs(deltaDays) % 30 === 0 && Math.abs(deltaDays) >= 30;
+      const changeText = isMonthExact
+        ? `${deltaDays > 0 ? `+${deltaDays / 30}` : `${deltaDays / 30}`} মাস (${deltaDays > 0 ? `+${deltaDays}` : deltaDays} দিন)`
+        : `${deltaDays > 0 ? `+${deltaDays}` : deltaDays} দিন`;
+      showToast(
+        `✅ "${sub.userName || 'User'}"-এর মেয়াদ ${changeText} করা হয়েছে (মোট: ${newDuration} দিন / ${monthsStr} মাস)!`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Quick adjust duration error:', err);
+      showToast('মেয়াদ পরিবর্তন করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    }
+  };
+
+  // Quick direct adjust completed / claimed days (+ / - days, reset to 0, mark complete)
+  const handleQuickAdjustClaimedDays = async (
+    sub: UserVIPSubscription,
+    deltaOrAction: number | 'reset' | 'complete'
+  ) => {
+    const currentClaimed = sub.daysClaimed || 0;
+    const duration = sub.durationDays || 30;
+    let newClaimed = 0;
+
+    if (deltaOrAction === 'reset') {
+      newClaimed = 0;
+    } else if (deltaOrAction === 'complete') {
+      newClaimed = duration;
+    } else {
+      newClaimed = Math.max(0, Math.min(duration, currentClaimed + deltaOrAction));
+    }
+
+    const newStatus =
+      sub.status === 'Cancelled'
+        ? 'Cancelled'
+        : newClaimed < duration
+        ? 'Active'
+        : 'Completed';
+
+    haptic('light');
+    try {
+      await updateDoc(doc(db, 'vip_subscriptions', sub.id), {
+        daysClaimed: newClaimed,
+        status: newStatus,
+        claimedUpdatedAt: new Date().toISOString()
+      });
+
+      if (newStatus === 'Active' && sub.status !== 'Cancelled' && sub.uid) {
+        await updateDoc(doc(db, 'users', sub.uid), {
+          isVip: true,
+          vipPackageName: sub.packageName,
+          vipBadge: 'VIP MEMBER'
+        });
+      } else if (newStatus === 'Completed' && sub.uid) {
+        await updateDoc(doc(db, 'users', sub.uid), {
+          isVip: false
+        });
+      }
+
+      let actionText = '';
+      if (deltaOrAction === 'reset') {
+        actionText = 'কমপ্লিট দিন রিসেট করে ০ দিন করা হয়েছে (নতুন করে শুরু)';
+      } else if (deltaOrAction === 'complete') {
+        actionText = `সম্পূর্ণ ${duration} দিন কমপ্লিট হিসেবে সেট করা হয়েছে (প্যাকেজ সমাপ্ত)`;
+      } else {
+        const sign = deltaOrAction > 0 ? `+${deltaOrAction}` : `${deltaOrAction}`;
+        actionText = `কমপ্লিট দিন ${sign} দিন পরিবর্তন করা হয়েছে (মোট সম্পন্ন: ${newClaimed}/${duration} দিন, বাকি: ${duration - newClaimed} দিন)`;
+      }
+
+      showToast(
+        `✅ "${sub.userName || 'User'}"-এর ${actionText}!`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Quick adjust claimed error:', err);
+      showToast('কমপ্লিট দিন পরিবর্তন করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    }
+  };
+
+  // Full Save from Duration Modal
+  const handleSaveDurationModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDurationSub) return;
+    const newDuration = Math.max(1, parseInt(modalDurationDays, 10) || 30);
+    const newClaimed = Math.max(0, parseInt(modalDaysClaimed, 10) || 0);
+    const newStatus =
+      editingDurationSub.status === 'Cancelled'
+        ? 'Cancelled'
+        : newClaimed < newDuration
+        ? 'Active'
+        : 'Completed';
+
+    setIsSavingDuration(true);
+    haptic('success');
+    try {
+      await updateDoc(doc(db, 'vip_subscriptions', editingDurationSub.id), {
+        durationDays: newDuration,
+        daysClaimed: newClaimed,
+        status: newStatus,
+        durationUpdatedAt: new Date().toISOString()
+      });
+
+      if (newStatus === 'Active' && editingDurationSub.uid) {
+        await updateDoc(doc(db, 'users', editingDurationSub.uid), {
+          isVip: true,
+          vipPackageName: editingDurationSub.packageName,
+          vipBadge: 'VIP MEMBER'
+        });
+      }
+
+      showToast(
+        `🎉 "${editingDurationSub.userName || 'User'}"-এর VIP মোট মেয়াদ ${newDuration} দিন (${(newDuration / 30).toFixed(1)} মাস) ও সম্পন্ন ${newClaimed} দিন সফলভাবে সেট করা হয়েছে!`,
+        'success'
+      );
+      setEditingDurationSub(null);
+    } catch (err: any) {
+      console.error('Save duration error:', err);
+      showToast('মেয়াদ সংরক্ষণ করতে সমস্যা হয়েছে: ' + err.message, 'error');
+    } finally {
+      setIsSavingDuration(false);
     }
   };
 
@@ -1226,7 +1449,12 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                 </div>
 
                 <div>
-                  <label className="font-bold text-slate-300 block mb-1">মেয়াদ (দিন):</label>
+                  <label className="font-bold text-slate-300 block mb-1 flex items-center justify-between">
+                    <span>মেয়াদ (দিন ও মাস):</span>
+                    <span className="text-[10px] text-amber-400 font-mono font-bold">
+                      = {((parseInt(pkgDuration, 10) || 0) / 30).toFixed(1)} মাস
+                    </span>
+                  </label>
                   <input
                     type="number"
                     required
@@ -1235,6 +1463,32 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                     placeholder="30"
                     className="input-modern py-1.5 text-xs font-mono"
                   />
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {[
+                      { label: '১৫ দিন', val: '15' },
+                      { label: '১ মাস (৩০ দিন)', val: '30' },
+                      { label: '২ মাস (৬০ দিন)', val: '60' },
+                      { label: '৩ মাস (৯০ দিন)', val: '90' },
+                      { label: '৬ মাস (১৮০ দিন)', val: '180' },
+                      { label: '১ বছর (৩৬৫ দিন)', val: '365' },
+                    ].map((item) => (
+                      <button
+                        key={item.val}
+                        type="button"
+                        onClick={() => {
+                          setPkgDuration(item.val);
+                          haptic('light');
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition ${
+                          pkgDuration === item.val
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            : 'bg-white/5 text-slate-400 border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div>
@@ -1245,6 +1499,21 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                     onChange={(e) => setPkgBadge(e.target.value)}
                     placeholder="HOT / Popular / 10% Daily"
                     className="input-modern py-1.5 text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-amber-300 block mb-1 flex items-center justify-between">
+                    <span>কত জন কিনেছে (Buyers Count):</span>
+                    <span className="text-[10px] text-emerald-400 font-bold">⚡ লাইভ আপডেট</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={pkgBuyersCount}
+                    onChange={(e) => setPkgBuyersCount(e.target.value)}
+                    placeholder="42, 78, 100..."
+                    className="input-modern py-1.5 text-xs font-mono border-amber-500/40"
                   />
                 </div>
 
@@ -1295,11 +1564,94 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
             </form>
           )}
 
+          {/* Master VIP Feature ON / OFF Switch Card */}
+          <div className={`p-4 rounded-3xl border transition-all shadow-xl flex flex-wrap items-center justify-between gap-4 ${
+            isVipEnabled
+              ? 'bg-gradient-to-r from-emerald-950/40 via-slate-900 to-amber-950/40 border-emerald-500/40'
+              : 'bg-gradient-to-r from-red-950/50 via-slate-900 to-slate-950 border-red-500/40'
+          }`}>
+            <div className="flex items-center gap-3.5">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl shadow-lg border transition-all ${
+                isVipEnabled
+                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                  : 'bg-red-500/20 text-red-400 border-red-500/40'
+              }`}>
+                <i className={`fas ${isVipEnabled ? 'fa-crown animate-pulse' : 'fa-ban'}`}></i>
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm font-black text-white">VIP সিস্টেম মাস্টার কন্ট্রোল (ON / OFF)</h3>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide border flex items-center gap-1.5 ${
+                    isVipEnabled
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
+                      : 'bg-red-500/20 text-red-300 border-red-500/40'
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${isVipEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`}></span>
+                    <span>{isVipEnabled ? 'বর্তমানে চালু (ACTIVE)' : 'বর্তমানে বন্ধ (DISABLED)'}</span>
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 mt-1 max-w-xl">
+                  {isVipEnabled
+                    ? '✅ VIP ফিচার চালু আছে। ইউজাররা তাদের প্যানেল থেকে VIP প্যাকেজ দেখতে ও কিনতে পারবেন।'
+                    : '🚫 VIP ফিচার বন্ধ আছে। ইউজার প্যানেলের বটম বার, মেনু, প্রোফাইল ও সব জায়গা থেকে VIP অপশন সম্পূর্ণ লুকিয়ে রাখা হয়েছে।'}
+                </p>
+              </div>
+            </div>
+
+            {/* Toggle Button */}
+            <button
+              type="button"
+              onClick={handleToggleVipModule}
+              disabled={isTogglingVip}
+              className={`px-5 py-2.5 rounded-2xl font-black text-xs transition-all flex items-center gap-2 active:scale-95 shadow-lg cursor-pointer ${
+                isVipEnabled
+                  ? 'bg-red-600/30 hover:bg-red-600/50 text-red-200 border border-red-500/50 hover:border-red-400'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30'
+              }`}
+            >
+              {isTogglingVip ? (
+                <i className="fas fa-spinner fa-spin"></i>
+              ) : (
+                <i className={`fas ${isVipEnabled ? 'fa-toggle-on text-base' : 'fa-toggle-off text-base'}`}></i>
+              )}
+              <span>{isVipEnabled ? 'VIP বন্ধ করুন (Turn OFF)' : 'VIP চালু করুন (Turn ON)'}</span>
+            </button>
+          </div>
+
+          {/* Live Buyers Controller Banner */}
+          <div className="p-4 rounded-3xl bg-gradient-to-r from-amber-950/40 via-slate-900 to-indigo-950/40 border border-amber-500/40 shadow-xl flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-lg shadow">
+                <i className="fas fa-users-gear"></i>
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-white flex items-center gap-2">
+                  <span>VIP কত জন কিনেছে (Buyers Count Live Controller)</span>
+                  <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30 font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    লাইভ আপডেট সক্রিয়
+                  </span>
+                </h4>
+                <p className="text-[10px] text-slate-400">
+                  যেকোনো প্যাকেজের ক্রেতা সংখ্যা বাড়ানো বা কমানো যাবে এবং এটি ইউজারদের স্ক্রিনে রিয়েলটাইমে আপডেট হবে।
+                </p>
+              </div>
+            </div>
+
+            <div className="text-right">
+              <span className="text-[10px] text-slate-400 uppercase block font-bold">মোট ভিআইপি ক্রেতা সংখ্যা</span>
+              <span className="text-base font-black text-amber-300 font-mono">
+                {packages.reduce((sum, p) => sum + (typeof p.buyersCount === 'number' ? p.buyersCount : (p.baseBuyersCount || 0)), 0)} জন
+              </span>
+            </div>
+          </div>
+
           {/* Packages List Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {packages.map((pkg) => {
               const dailyAmt = (pkg.price * (pkg.dailyReturnPercent || 10)) / 100;
               const totalAmt = dailyAmt * (pkg.durationDays || 30);
+              const effectiveBuyersCount = typeof pkg.buyersCount === 'number' ? pkg.buyersCount : (pkg.baseBuyersCount || 0);
 
               return (
                 <div
@@ -1355,17 +1707,113 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                         </div>
                       </div>
 
+                      {/* VIP Buyers Count Live Controller Card (বাড়ানো ও কমানো) */}
+                      <div className="mt-2.5 p-3 rounded-2xl bg-gradient-to-r from-amber-950/30 via-slate-900 to-slate-950 border border-amber-500/30 space-y-2 shadow-sm">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="relative flex h-2 w-2">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            <span className="text-[11px] font-black text-amber-300">কত জন কিনেছে (Buyers):</span>
+                          </div>
+                          <span className="text-sm font-black font-mono text-emerald-400">
+                            {effectiveBuyersCount} জন
+                          </span>
+                        </div>
+
+                        {/* Quick Increase / Decrease Buttons */}
+                        <div className="flex items-center justify-between gap-1 flex-wrap">
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={updatingBuyersPkgId === pkg.id}
+                              onClick={() => handleAdjustBuyersCount(pkg, -10)}
+                              className="px-2 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 text-[10px] font-bold active:scale-95 transition"
+                              title="১০ জন কমান"
+                            >
+                              -১০
+                            </button>
+                            <button
+                              type="button"
+                              disabled={updatingBuyersPkgId === pkg.id}
+                              onClick={() => handleAdjustBuyersCount(pkg, -1)}
+                              className="px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 text-xs font-black active:scale-95 transition flex items-center gap-1"
+                              title="১ জন কমান"
+                            >
+                              <i className="fas fa-minus text-[9px]"></i> ১
+                            </button>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={updatingBuyersPkgId === pkg.id}
+                              onClick={() => handleAdjustBuyersCount(pkg, 1)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-black active:scale-95 transition flex items-center gap-1"
+                              title="১ জন বাড়ান"
+                            >
+                              <i className="fas fa-plus text-[9px]"></i> ১
+                            </button>
+                            <button
+                              type="button"
+                              disabled={updatingBuyersPkgId === pkg.id}
+                              onClick={() => handleAdjustBuyersCount(pkg, 5)}
+                              className="px-2 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 text-[10px] font-bold active:scale-95 transition"
+                              title="৫ জন বাড়ান"
+                            >
+                              +৫
+                            </button>
+                            <button
+                              type="button"
+                              disabled={updatingBuyersPkgId === pkg.id}
+                              onClick={() => handleAdjustBuyersCount(pkg, 10)}
+                              className="px-2 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10px] font-bold active:scale-95 transition"
+                              title="১০ জন বাড়ান"
+                            >
+                              +১০
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Direct Numeric Input */}
+                        <div className="flex items-center gap-1.5 pt-1">
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder="নির্দিষ্ট সংখ্যা লিখুন..."
+                            value={buyersCountInputMap[pkg.id] ?? ''}
+                            onChange={(e) => setBuyersCountInputMap({ ...buyersCountInputMap, [pkg.id]: e.target.value })}
+                            className="input-modern py-1 px-2 text-xs font-mono flex-1 bg-black/60"
+                          />
+                          <button
+                            type="button"
+                            disabled={updatingBuyersPkgId === pkg.id || !buyersCountInputMap[pkg.id]}
+                            onClick={() => {
+                              const val = parseInt(buyersCountInputMap[pkg.id], 10);
+                              if (!isNaN(val) && val >= 0) {
+                                handleSetExactBuyersCount(pkg, val);
+                                setBuyersCountInputMap({ ...buyersCountInputMap, [pkg.id]: '' });
+                              }
+                            }}
+                            className="px-3 py-1 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black text-xs rounded-xl shadow transition active:scale-95"
+                          >
+                            সেট
+                          </button>
+                        </div>
+                      </div>
+
                       {/* Subscriber Count Display */}
-                      <div className="mt-2.5 p-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between gap-2">
+                      <div className="mt-2.5 p-2 rounded-xl bg-slate-950/60 border border-white/5 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <i className="fas fa-users text-emerald-400 text-xs"></i>
-                          <span className="text-[11px] font-bold text-white">গ্রাহক সংখ্যা:</span>
+                          <i className="fas fa-id-card-clip text-slate-400 text-xs"></i>
+                          <span className="text-[11px] font-bold text-slate-300">ডাটাবেজ সাবস্ক্রিপশন:</span>
                         </div>
                         <div className="flex items-center gap-1.5 font-mono text-xs">
-                          <span className="text-emerald-400 font-black">
+                          <span className="text-white font-black">
                             {subscriptions.filter(s => s.packageId === pkg.id || s.packagePrice === pkg.price).length} জন
                           </span>
-                          <span className="text-[10px] text-slate-400">
+                          <span className="text-[10px] text-emerald-400">
                             ({subscriptions.filter(s => (s.packageId === pkg.id || s.packagePrice === pkg.price) && s.status === 'Active').length} সক্রিয়)
                           </span>
                         </div>
@@ -1386,6 +1834,7 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                           setPkgBadge(pkg.badge || '');
                           setPkgDesc(pkg.description || '');
                           setPkgIsActive(pkg.isActive !== false);
+                          setPkgBuyersCount((typeof pkg.buyersCount === 'number' ? pkg.buyersCount : (pkg.baseBuyersCount || 0)).toString());
                           setIsEditingPackage(true);
                           haptic('light');
                         }}
@@ -1592,30 +2041,229 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                         </div>
                       </div>
 
-                      {/* Middle: Claim Progress & Earnings */}
-                      <div className="bg-black/30 p-2.5 rounded-xl border border-white/5 flex flex-wrap items-center gap-4 text-xs">
-                        <div>
-                          <span className="text-[10px] text-slate-400 block font-bold">ক্লেইম প্রোগ্রেস:</span>
-                          <span className="text-emerald-400 font-mono font-black">
-                            {sub.daysClaimed || 0} / {sub.durationDays || 30} দিন
-                          </span>
+                      {/* Middle: Claim Progress, Duration, Remaining & Quick Adjust */}
+                      <div className="bg-black/40 p-3 rounded-2xl border border-white/5 space-y-2 text-xs flex-1 min-w-[280px]">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          <div className="bg-slate-900/60 p-2 rounded-xl border border-white/5">
+                            <span className="text-[10px] text-slate-400 block font-bold">মোট মেয়াদ:</span>
+                            <span className="text-amber-300 font-mono font-black text-xs">
+                              {sub.durationDays || 30} দিন <span className="text-[10px] text-amber-400/80 font-normal">({((sub.durationDays || 30) / 30).toFixed(1)} মাস)</span>
+                            </span>
+                          </div>
+                          <div className="bg-slate-900/60 p-2 rounded-xl border border-white/5">
+                            <span className="text-[10px] text-slate-400 block font-bold">ক্লেইম সম্পন্ন:</span>
+                            <span className="text-emerald-400 font-mono font-black text-xs">
+                              {sub.daysClaimed || 0} দিন
+                            </span>
+                          </div>
+                          <div className="bg-slate-900/60 p-2 rounded-xl border border-white/5">
+                            <span className="text-[10px] text-slate-400 block font-bold">বাকি মেয়াদ:</span>
+                            <span className="text-cyan-300 font-mono font-black text-xs">
+                              {Math.max(0, (sub.durationDays || 30) - (sub.daysClaimed || 0))} দিন
+                            </span>
+                          </div>
+                          <div className="bg-slate-900/60 p-2 rounded-xl border border-white/5">
+                            <span className="text-[10px] text-slate-400 block font-bold">মোট দেওয়া হয়েছে:</span>
+                            <span className="text-white font-mono font-black text-xs">
+                              ৳{(sub.totalEarned || 0).toFixed(1)}
+                            </span>
+                          </div>
                         </div>
-                        <div>
-                          <span className="text-[10px] text-slate-400 block font-bold">দৈনিক লাভ:</span>
-                          <span className="text-amber-400 font-mono font-bold">
-                            ৳{(sub.dailyReturnAmount || 0).toFixed(1)} ({sub.dailyReturnPercent || 10}%)
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-slate-400 block font-bold">মোট দেওয়া হয়েছে:</span>
-                          <span className="text-white font-mono font-black">
-                            ৳{(sub.totalEarned || 0).toFixed(1)}
-                          </span>
+
+                        {/* Quick Duration Adjust Buttons for Days and Months */}
+                        <div className="space-y-1.5 pt-1.5 border-t border-white/5">
+                          {/* Days Row */}
+                          <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                            <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
+                              <i className="fas fa-calendar-day text-blue-400 text-[9px]"></i>
+                              <span>দিন কমান/বাড়ান:</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, -1)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 font-bold active:scale-95 transition"
+                              title="১ দিন কমান"
+                            >
+                              -১ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, -7)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 font-bold active:scale-95 transition"
+                              title="৭ দিন কমান"
+                            >
+                              -৭ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, -15)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 font-bold active:scale-95 transition"
+                              title="১৫ দিন কমান"
+                            >
+                              -১৫ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, 1)}
+                              className="px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 font-bold active:scale-95 transition"
+                              title="১ দিন বাড়ান"
+                            >
+                              +১ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, 7)}
+                              className="px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 font-bold active:scale-95 transition"
+                              title="৭ দিন বাড়ান"
+                            >
+                              +৭ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, 15)}
+                              className="px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 font-bold active:scale-95 transition"
+                              title="১৫ দিন বাড়ান"
+                            >
+                              +১৫ দিন
+                            </button>
+                          </div>
+
+                          {/* Months Row */}
+                          <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                            <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
+                              <i className="fas fa-calendar-days text-amber-400 text-[9px]"></i>
+                              <span>মাস কমান/বাড়ান:</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, -30)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 font-black active:scale-95 transition"
+                              title="১ মাস (৩০ দিন) কমান"
+                            >
+                              -১ মাস (-৩০ দিন)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, -60)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 font-black active:scale-95 transition"
+                              title="২ মাস (৬০ দিন) কমান"
+                            >
+                              -২ মাস (-৬০ দিন)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, 30)}
+                              className="px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-black active:scale-95 transition"
+                              title="১ মাস (৩০ দিন) বাড়ান"
+                            >
+                              +১ মাস (+৩০ দিন)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, 60)}
+                              className="px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-black active:scale-95 transition"
+                              title="২ মাস (৬০ দিন) বাড়ান"
+                            >
+                              +২ মাস (+৬০ দিন)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustDuration(sub, 90)}
+                              className="px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 font-black active:scale-95 transition"
+                              title="৩ মাস (৯০ দিন) বাড়ান"
+                            >
+                              +৩ মাস (+৯০ দিন)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingDurationSub(sub);
+                                setModalDurationDays((sub.durationDays || 30).toString());
+                                setModalDaysClaimed((sub.daysClaimed || 0).toString());
+                                haptic('light');
+                              }}
+                              className="px-2.5 py-0.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 font-black active:scale-95 transition ml-auto flex items-center gap-1"
+                            >
+                              <i className="fas fa-calendar-check text-[9px]"></i>
+                              <span>কাস্টম দিন/মাস এডিট</span>
+                            </button>
+                          </div>
+
+                          {/* Completed/Claimed Days Row */}
+                          <div className="flex flex-wrap items-center gap-1 text-[10px] pt-1.5 border-t border-white/5">
+                            <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
+                              <i className="fas fa-check-double text-emerald-400 text-[9px]"></i>
+                              <span>কমপ্লিট দিন কমান/বাড়ান:</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustClaimedDays(sub, 'reset')}
+                              className="px-2 py-0.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-black active:scale-95 transition"
+                              title="কমপ্লিট দিন ০ দিন করুন (নতুন করে শুরু)"
+                            >
+                              🔄 ০ দিন (রিসেট)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustClaimedDays(sub, -1)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 font-bold active:scale-95 transition"
+                              title="কমপ্লিট দিন ১ দিন কমান (বাকি ১ দিন বাড়বে)"
+                            >
+                              -১ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustClaimedDays(sub, -5)}
+                              className="px-2 py-0.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/25 font-bold active:scale-95 transition"
+                              title="কমপ্লিট দিন ৫ দিন কমান"
+                            >
+                              -৫ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustClaimedDays(sub, 1)}
+                              className="px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 font-bold active:scale-95 transition"
+                              title="কমপ্লিট দিন ১ দিন বাড়ান"
+                            >
+                              +১ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustClaimedDays(sub, 5)}
+                              className="px-2 py-0.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 font-bold active:scale-95 transition"
+                              title="কমপ্লিট দিন ৫ দিন বাড়ান"
+                            >
+                              +৫ দিন
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickAdjustClaimedDays(sub, 'complete')}
+                              className="px-2 py-0.5 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 font-bold active:scale-95 transition"
+                              title="সব দিন সম্পন্ন হিসেবে মার্ক করুন (প্যাকেজ সমাপ্ত)"
+                            >
+                              ✓ সব সম্পন্ন
+                            </button>
+                          </div>
                         </div>
                       </div>
 
-                      {/* Right: ACTION BUTTONS (Cancel VIP / Reactivate VIP) */}
-                      <div className="flex items-center gap-2 self-end lg:self-center">
+                      {/* Right: ACTION BUTTONS (Duration / Cancel VIP / Reactivate VIP) */}
+                      <div className="flex items-center gap-2 self-end lg:self-center flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingDurationSub(sub);
+                            setModalDurationDays((sub.durationDays || 30).toString());
+                            setModalDaysClaimed((sub.daysClaimed || 0).toString());
+                            haptic('light');
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-black transition flex items-center gap-1.5 active:scale-95 shadow-sm"
+                          title="মেয়াদ ও দিন পরিবর্তন করুন"
+                        >
+                          <i className="fas fa-calendar-check text-[11px]"></i>
+                          <span>মেয়াদ নিয়ন্ত্রণ</span>
+                        </button>
+
                         {isActive && (
                           <button
                             onClick={() => {
@@ -1898,6 +2546,261 @@ export const AdminVIPAndWithdrawManager: React.FC<AdminVIPAndWithdrawManagerProp
                 <span>বাতিল নিশ্চিত করুন</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIP Duration & Days Adjustment Modal */}
+      {editingDurationSub && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-blue-500/50 rounded-3xl max-w-md w-full p-5 space-y-4 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center text-sm border border-blue-500/30">
+                  <i className="fas fa-calendar-days"></i>
+                </div>
+                <span>VIP মেয়াদ ও দিন কন্ট্রোলার</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingDurationSub(null)}
+                className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center transition"
+              >
+                <i className="fas fa-times text-xs"></i>
+              </button>
+            </div>
+
+            {/* Target User Details */}
+            <div className="p-3.5 bg-black/40 rounded-2xl border border-white/5 space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">ইউজার:</span>
+                <span className="font-black text-white">{editingDurationSub.userName || 'User'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">প্যাকেজ:</span>
+                <span className="font-bold text-amber-400">
+                  {editingDurationSub.packageName} (৳{editingDurationSub.packagePrice})
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">বর্তমান মেয়াদ:</span>
+                <span className="font-mono text-white font-bold">
+                  {editingDurationSub.durationDays || 30} দিন ({((editingDurationSub.durationDays || 30) / 30).toFixed(1)} মাস)
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">ক্লেইম হয়েছে / বাকি:</span>
+                <span className="font-mono text-emerald-400 font-bold">
+                  {editingDurationSub.daysClaimed || 0} দিন সম্পন্ন • বাকি {Math.max(0, (editingDurationSub.durationDays || 30) - (editingDurationSub.daysClaimed || 0))} দিন
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Adjustment Presets */}
+            <div className="space-y-2">
+              <label className="text-slate-300 font-bold text-xs block">
+                এক ক্লিকে মেয়াদ বাড়ান বা কমান (Quick Presets):
+              </label>
+
+              {/* Increase Buttons */}
+              <div className="space-y-1">
+                <span className="text-[10px] text-emerald-400 font-bold block">মেয়াদ বাড়াতে চাপুন:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: '+১ দিন', days: 1 },
+                    { label: '+৭ দিন', days: 7 },
+                    { label: '+১৫ দিন', days: 15 },
+                    { label: '+১ মাস (৩০ দিন)', days: 30 },
+                    { label: '+২ মাস (৬০ দিন)', days: 60 },
+                    { label: '+৩ মাস (৯০ দিন)', days: 90 },
+                    { label: '+৬ মাস (১৮০ দিন)', days: 180 },
+                    { label: '+১ বছর (৩৬৫ দিন)', days: 365 },
+                  ].map((item) => (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => {
+                        const cur = parseInt(modalDurationDays, 10) || 30;
+                        setModalDurationDays((cur + item.days).toString());
+                        haptic('light');
+                      }}
+                      className="px-2 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold active:scale-95 transition"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Decrease Buttons */}
+              <div className="space-y-1 pt-1">
+                <span className="text-[10px] text-red-400 font-bold block">মেয়াদ কমাতে চাপুন:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: '-১ দিন', days: -1 },
+                    { label: '-৭ দিন', days: -7 },
+                    { label: '-১৫ দিন', days: -15 },
+                    { label: '-১ মাস (৩০ দিন)', days: -30 },
+                    { label: '-২ মাস (৬০ দিন)', days: -60 },
+                  ].map((item) => (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => {
+                        const cur = parseInt(modalDurationDays, 10) || 30;
+                        setModalDurationDays(Math.max(1, cur + item.days).toString());
+                        haptic('light');
+                      }}
+                      className="px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 text-[10px] font-bold active:scale-95 transition"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Custom Inputs Form */}
+            <form onSubmit={handleSaveDurationModal} className="space-y-3 pt-2 border-t border-white/10 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-slate-300 font-bold block mb-1">
+                    মোট মেয়াদ (দিন সংখ্যা):
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={modalDurationDays}
+                      onChange={(e) => setModalDurationDays(e.target.value)}
+                      placeholder="30, 45, 60, 90..."
+                      className="input-modern py-2 text-xs font-mono pl-8 border-blue-500/40"
+                    />
+                    <i className="fas fa-calendar-day absolute left-2.5 top-2.5 text-blue-400 text-xs pointer-events-none"></i>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-slate-300 font-bold block mb-1">
+                    মোট মেয়াদ (মাস হিসেবে):
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={0.1}
+                      step="0.5"
+                      value={((parseInt(modalDurationDays, 10) || 0) / 30).toFixed(1)}
+                      onChange={(e) => {
+                        const m = parseFloat(e.target.value) || 0;
+                        setModalDurationDays(Math.max(1, Math.round(m * 30)).toString());
+                      }}
+                      placeholder="1, 2, 3..."
+                      className="input-modern py-2 text-xs font-mono pl-8 border-blue-500/40"
+                    />
+                    <i className="fas fa-calendar-days absolute left-2.5 top-2.5 text-blue-400 text-xs pointer-events-none"></i>
+                  </div>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                💡 দিন বা মাস যেকোনো একটি বক্সে পরিবর্তন করলেই অপরটি স্বয়ংক্রিয়ভাবে হিসাব হয়ে যাবে (৩০ দিন = ১ মাস)।
+              </p>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-300 font-bold block">
+                    অতিক্রান্ত / ক্লেইম সম্পন্ন দিন (Claimed Days):
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalDaysClaimed('0');
+                      haptic('light');
+                    }}
+                    className="text-[10px] text-amber-400 hover:underline font-bold"
+                  >
+                    রিসেট (০ দিন থেকে শুরু)
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={modalDaysClaimed}
+                    onChange={(e) => setModalDaysClaimed(e.target.value)}
+                    placeholder="0, 5, 10..."
+                    className="input-modern py-2 text-xs font-mono pl-8 border-white/20"
+                  />
+                  <i className="fas fa-check-double absolute left-2.5 top-2.5 text-emerald-400 text-xs pointer-events-none"></i>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                  <span className="text-[10px] text-slate-400 font-bold w-full">কমপ্লিট দিন কমান/বাড়ান প্রিসেট:</span>
+                  {[
+                    { label: '🔄 ০ দিন (রিসেট)', val: 0, type: 'set' },
+                    { label: '-৫ দিন', val: -5, type: 'delta' },
+                    { label: '-১ দিন', val: -1, type: 'delta' },
+                    { label: '+১ দিন', val: 1, type: 'delta' },
+                    { label: '+৫ দিন', val: 5, type: 'delta' },
+                    { label: '+৭ দিন', val: 7, type: 'delta' },
+                    { label: '✓ সব দিন সম্পন্ন', val: 'all', type: 'all' },
+                  ].map((btn) => (
+                    <button
+                      key={btn.label}
+                      type="button"
+                      onClick={() => {
+                        const cur = parseInt(modalDaysClaimed, 10) || 0;
+                        const duration = parseInt(modalDurationDays, 10) || 30;
+                        if (btn.type === 'set') {
+                          setModalDaysClaimed(btn.val.toString());
+                        } else if (btn.type === 'all') {
+                          setModalDaysClaimed(duration.toString());
+                        } else {
+                          setModalDaysClaimed(Math.max(0, Math.min(duration, cur + (btn.val as number))).toString());
+                        }
+                        haptic('light');
+                      }}
+                      className="px-2 py-0.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold active:scale-95 transition"
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  ০ সেট করলে ইউজার সম্পূর্ণ নতুনভাবে শুরু থেকে প্রতিদিন লাভ পাবেন, এবং সব সম্পন্ন দিলে প্যাকেজের মেয়াদ শেষ হবে
+                </p>
+              </div>
+
+              {/* Calculated Summary Preview */}
+              <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-500/30 flex items-center justify-between text-xs">
+                <span className="text-slate-300 font-bold">নতুন অবশিষ্ট মেয়াদ থাকবে:</span>
+                <span className="font-mono text-cyan-300 font-black text-sm">
+                  {Math.max(0, (parseInt(modalDurationDays, 10) || 0) - (parseInt(modalDaysClaimed, 10) || 0))} দিন
+                </span>
+              </div>
+
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingDurationSub(null)}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition"
+                >
+                  বাতিল
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingDuration}
+                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 active:scale-95 disabled:opacity-50"
+                >
+                  {isSavingDuration ? (
+                    <i className="fas fa-spinner fa-spin"></i>
+                  ) : (
+                    <i className="fas fa-save"></i>
+                  )}
+                  <span>মেয়াদ পরিবর্তন সেভ করুন</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
